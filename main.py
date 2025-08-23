@@ -233,30 +233,37 @@ def show_history(task_engine):
 
 def handle_voice_command(voice_processor, nlp_processor, task_engine):
     """Handle voice command input."""
-    print("🎤 Listening for voice command... (speak now)")
-    
     try:
         command_text = voice_processor.listen_once()
         if command_text:
-            print(f"Heard: {command_text}")
-            
+            print(f"\n📝 Processing command: {command_text}")
+
             # Parse and execute
             parsed_command = nlp_processor.parse_command(command_text)
+            print(f"🧠 Understood: {parsed_command.action.value} on {parsed_command.application.value}")
+
+            if parsed_command.confidence < 0.3:
+                print("⚠️  Warning: Low confidence in command understanding")
+
             result = task_engine.execute_command(parsed_command)
-            
+
             # Display result
             if result.status.value == 'completed':
                 print(f"✅ Success: {result.message}")
+                if result.execution_time > 0:
+                    print(f"⏱️  Execution time: {result.execution_time:.2f}s")
                 # Optionally speak the result
-                voice_processor.speak("Command completed successfully", async_speech=True)
+                if voice_processor.tts_engine:
+                    voice_processor.speak("Command completed successfully", async_speech=True)
             else:
                 print(f"❌ Failed: {result.message}")
-                voice_processor.speak("Command failed", async_speech=True)
+                if voice_processor.tts_engine:
+                    voice_processor.speak("Command failed", async_speech=True)
         else:
-            print("No voice input detected")
-    
+            print("❌ No voice input detected")
+
     except Exception as e:
-        print(f"Voice command error: {e}")
+        print(f"❌ Voice command error: {e}")
 
 def main():
     """Main application entry point."""

@@ -54,8 +54,11 @@ class VoiceProcessor:
                 self.recognizer.dynamic_energy_threshold = True
                 self.recognizer.pause_threshold = 0.8
 
-                # Calibrate microphone
-                self._calibrate_microphone()
+                # Test microphone access
+                with self.microphone as source:
+                    pass  # Just test if we can access the microphone
+
+                self.logger.info("Speech recognition initialized successfully")
             except Exception as e:
                 self.logger.error(f"Error initializing speech recognition: {e}")
                 self.recognizer = None
@@ -104,32 +107,36 @@ class VoiceProcessor:
             Recognized text or None if no speech detected
         """
         if not self.microphone or not self.recognizer:
-            self.logger.warning("Speech recognition not available")
+            print("❌ Speech recognition not available (PyAudio not installed)")
             return None
 
         try:
+            print("🎤 Listening... (speak now)")
             with self.microphone as source:
-                self.logger.info("Listening for command...")
+                # Adjust for ambient noise
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                print("🎤 Ready - speak your command...")
+
                 audio = self.recognizer.listen(source,
                                              timeout=self.timeout,
                                              phrase_time_limit=self.phrase_timeout)
 
-            self.logger.info("Processing speech...")
+            print("🔄 Processing speech...")
             text = self.recognizer.recognize_google(audio, language=language)
-            self.logger.info(f"Recognized: {text}")
+            print(f"✅ Heard: '{text}'")
             return text.lower().strip()
 
         except sr.WaitTimeoutError:
-            self.logger.warning("No speech detected within timeout")
+            print("⏰ No speech detected within timeout")
             return None
         except sr.UnknownValueError:
-            self.logger.warning("Could not understand audio")
+            print("❓ Could not understand audio - please speak clearly")
             return None
         except sr.RequestError as e:
-            self.logger.error(f"Error with speech recognition service: {e}")
+            print(f"❌ Error with speech recognition service: {e}")
             return None
         except Exception as e:
-            self.logger.error(f"Unexpected error in speech recognition: {e}")
+            print(f"❌ Unexpected error in speech recognition: {e}")
             return None
     
     def start_continuous_listening(self, callback: Callable[[str], None], language: str = "en-US"):
