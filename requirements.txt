@@ -1,0 +1,30 @@
+# Core dependencies
+opencv-python>=4.8.0
+pillow>=10.0.0
+numpy>=1.24.0
+pyautogui>=0.9.50
+pynput>=1.7.0
+
+# Screen capture and image processing
+mss>=9.0.0
+pytesseract>=0.3.10
+
+# Voice processing
+speechrecognition>=3.10.0
+pyttsx3>=2.90
+
+# Natural Language Processing
+spacy>=3.6.0
+nltk>=3.8.0
+
+# Web automation
+selenium>=4.11.0
+webdriver-manager>=4.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Application automation
+pygetwindow>=0.0.9
+psutil>=5.9.0
