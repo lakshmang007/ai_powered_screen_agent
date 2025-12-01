@@ -1,0 +1,19 @@
+No Gemini API key found. Set GEMINI_API_KEY environment variable
+.No Gemini API key found. Set GEMINI_API_KEY environment variable
+.No Gemini API key found. Set GEMINI_API_KEY environment variable
+FNo Gemini API key found. Set GEMINI_API_KEY environment variable
+.
+======================================================================
+FAIL: test_close_this (__main__.TestNLPCloseFix.test_close_this)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\5th sem\ai_powered_screen_agent\tests\test_nlp_close_fix.py", line 29, in test_close_this
+    self.assertIsNone(command.target)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+AssertionError: 'close this' is not None
+
+----------------------------------------------------------------------
+Ran 4 tests in 3.636s
+
+FAILED (failures=1)
+DEBUG: target is 'close this'

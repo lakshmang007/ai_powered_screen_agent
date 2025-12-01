@@ -2,38 +2,87 @@
 Core Screen Agent for automated screen interaction and computer vision.
 """
 
-import cv2
-import numpy as np
-import pyautogui
-import pytesseract
-from PIL import Image, ImageGrab
-import mss
+from __future__ import annotations
 import time
 import logging
-from typing import Tuple, List, Optional, Dict, Any
+from typing import Tuple, List, Optional, Dict, Any, TYPE_CHECKING
 import os
 
-# Configure pyautogui
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.1
+if TYPE_CHECKING:
+    import numpy as np
+
+# Optional dependencies
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
+    cv2 = None
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    np = None
+
+try:
+    import pyautogui
+    HAS_PYAUTOGUI = True
+    # Configure pyautogui
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.1
+except ImportError:
+    HAS_PYAUTOGUI = False
+    pyautogui = None
+
+try:
+    import pytesseract
+    HAS_PYTESSERACT = True
+except ImportError:
+    HAS_PYTESSERACT = False
+    pytesseract = None
+
+try:
+    from PIL import Image, ImageGrab
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+    Image = None
+    ImageGrab = None
+
+try:
+    import mss
+    HAS_MSS = True
+except ImportError:
+    HAS_MSS = False
+    mss = None
 
 class ScreenAgent:
     """Main class for screen interaction and automation."""
-    
+
     def __init__(self, confidence_threshold: float = 0.8):
         """
         Initialize the Screen Agent.
-        
+
         Args:
             confidence_threshold: Minimum confidence for template matching
         """
         self.confidence_threshold = confidence_threshold
-        self.screen_monitor = mss.mss()
         self.logger = logging.getLogger(__name__)
-        
+
+        # Initialize screen monitor if available
+        # We don't initialize mss here to avoid threading issues
+        # Instead we create a new instance for each capture
+        if not HAS_MSS:
+            self.logger.warning("mss not available - screen capture disabled")
+
         # Configure Tesseract path if needed (Windows)
-        if os.name == 'nt':
-            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+        if HAS_PYTESSERACT and os.name == 'nt':
+            try:
+                pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            except:
+                pass
     
     def capture_screen(self, region: Optional[Dict[str, int]] = None) -> np.ndarray:
         """
@@ -45,17 +94,21 @@ class ScreenAgent:
         Returns:
             Screenshot as numpy array
         """
+        if not HAS_MSS:
+            return None
+
         try:
-            if region:
-                screenshot = self.screen_monitor.grab(region)
-            else:
-                screenshot = self.screen_monitor.grab(self.screen_monitor.monitors[0])
-            
-            # Convert to numpy array
-            img = np.array(screenshot)
-            # Convert BGRA to BGR
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-            return img
+            with mss.mss() as sct:
+                if region:
+                    screenshot = sct.grab(region)
+                else:
+                    screenshot = sct.grab(sct.monitors[0])
+                
+                # Convert to numpy array
+                img = np.array(screenshot)
+                # Convert BGRA to BGR
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                return img
         except Exception as e:
             self.logger.error(f"Error capturing screen: {e}")
             return None
@@ -123,13 +176,60 @@ class ScreenAgent:
             ocr_data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
             
             matches = []
+            search_text = text.lower().strip()
+            
+            # 1. Check for exact word matches first (fast)
             for i, word in enumerate(ocr_data['text']):
-                if text.lower() in word.lower() and int(ocr_data['conf'][i]) > 30:
+                if not word.strip():
+                    continue
+                    
+                if search_text in word.lower() and int(ocr_data['conf'][i]) > 30:
                     x = ocr_data['left'][i]
                     y = ocr_data['top'][i]
                     w = ocr_data['width'][i]
                     h = ocr_data['height'][i]
                     matches.append((x, y, w, h))
+            
+            # 2. If no single-word matches, try phrase matching
+            if not matches and ' ' in search_text:
+                words = search_text.split()
+                n_words = len(words)
+                
+                # Filter out empty words but keep original indices
+                valid_words = []
+                for idx, text_val in enumerate(ocr_data['text']):
+                    if text_val.strip():
+                        valid_words.append({'text': text_val.lower(), 'index': idx})
+                
+                # Iterate through valid words to find the sequence
+                for i in range(len(valid_words) - n_words + 1):
+                    # Check if this sequence matches
+                    match = True
+                    for j in range(n_words):
+                        if words[j] not in valid_words[i+j]['text']:
+                            match = False
+                            break
+                    
+                    if match:
+                        # Found the phrase! Calculate bounding box covering all words
+                        # Get original indices
+                        start_idx = valid_words[i]['index']
+                        end_idx = valid_words[i+n_words-1]['index']
+                        
+                        # Check confidence of all words in the sequence
+                        # We need to check all valid words in the range
+                        sequence_indices = [valid_words[k]['index'] for k in range(i, i+n_words)]
+                        confidences = [int(ocr_data['conf'][idx]) for idx in sequence_indices]
+                        
+                        if all(c > 30 for c in confidences):
+                            x1 = ocr_data['left'][start_idx]
+                            y1 = ocr_data['top'][start_idx]
+                            
+                            x2 = ocr_data['left'][end_idx] + ocr_data['width'][end_idx]
+                            y2 = ocr_data['top'][end_idx] + ocr_data['height'][end_idx]
+                            
+                            # Combined box
+                            matches.append((x1, y1, x2 - x1, y2 - y1))
             
             return matches
         except Exception as e:

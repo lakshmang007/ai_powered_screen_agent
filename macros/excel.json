@@ -1,0 +1,92 @@
+{
+  "name": "excel",
+  "shortcut_key": "",
+  "created_at": 1764485606.6227074,
+  "duration": 6.503784418106079,
+  "events": [
+    {
+      "t": 0.0,
+      "type": "key_press",
+      "data": {
+        "key": "n"
+      }
+    },
+    {
+      "t": 0.018123388290405273,
+      "type": "key_release",
+      "data": {
+        "key": "n"
+      }
+    },
+    {
+      "t": 0.3562629222869873,
+      "type": "key_press",
+      "data": {
+        "key": "f"
+      }
+    },
+    {
+      "t": 0.43259382247924805,
+      "type": "key_release",
+      "data": {
+        "key": "f"
+      }
+    },
+    {
+      "t": 3.1278891563415527,
+      "type": "key_press",
+      "data": {
+        "key": "Key.backspace"
+      }
+    },
+    {
+      "t": 3.245837450027466,
+      "type": "key_release",
+      "data": {
+        "key": "Key.backspace"
+      }
+    },
+    {
+      "t": 4.332071542739868,
+      "type": "key_press",
+      "data": {
+        "key": "o"
+      }
+    },
+    {
+      "t": 4.4000608921051025,
+      "type": "key_release",
+      "data": {
+        "key": "o"
+      }
+    },
+    {
+      "t": 5.186018228530884,
+      "type": "key_press",
+      "data": {
+        "key": "t"
+      }
+    },
+    {
+      "t": 5.250117063522339,
+      "type": "key_release",
+      "data": {
+        "key": "t"
+      }
+    },
+    {
+      "t": 6.428734302520752,
+      "type": "key_press",
+      "data": {
+        "key": "Key.enter"
+      }
+    },
+    {
+      "t": 6.503784418106079,
+      "type": "key_release",
+      "data": {
+        "key": "Key.enter"
+      }
+    }
+  ]
+}

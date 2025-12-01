@@ -4,14 +4,28 @@ Generic browser automation handler.
 
 import time
 import logging
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from selenium.webdriver.common.keys import Keys
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.common.exceptions import TimeoutException, NoSuchElementException
+    from selenium.webdriver.common.keys import Keys
+    HAS_SELENIUM = True
+except ImportError:
+    HAS_SELENIUM = False
+    webdriver = None
+    By = None
+    WebDriverWait = None
+    EC = None
+    Service = None
+    ChromeDriverManager = None
+    TimeoutException = Exception
+    NoSuchElementException = Exception
+    Keys = None
 
 from ...core.screen_agent import ScreenAgent
 from ...core.nlp_processor import ParsedCommand, ActionType
@@ -43,8 +57,8 @@ class BrowserHandler:
             TaskResult with execution status
         """
         try:
-            # Initialize browser if not already done
-            if not self._ensure_browser_ready():
+            # Initialize browser if not already done, unless we are closing it
+            if command.action != ActionType.CLOSE and not self._ensure_browser_ready():
                 return TaskResult(
                     status=TaskStatus.FAILED,
                     message="Could not initialize browser"
@@ -60,6 +74,8 @@ class BrowserHandler:
                 return self._handle_type(command)
             elif command.action == ActionType.OPEN:
                 return self._handle_open_url(command)
+            elif command.action == ActionType.CLOSE:
+                return self._handle_close(command)
             else:
                 return TaskResult(
                     status=TaskStatus.FAILED,
@@ -75,6 +91,23 @@ class BrowserHandler:
     def _ensure_browser_ready(self) -> bool:
         """Ensure browser is ready for operations."""
         try:
+            # Check if existing driver is still valid
+            if self.driver is not None:
+                try:
+                    # Test if session is still alive
+                    _ = self.driver.current_url
+                    return True
+                except Exception:
+                    # Session is dead, clean up and recreate
+                    self.logger.warning("Browser session lost, recreating...")
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
+                    self.driver = None
+                    self.wait = None
+
+            # Create new browser session
             if self.driver is None:
                 # Setup Chrome driver
                 options = webdriver.ChromeOptions()
@@ -82,13 +115,14 @@ class BrowserHandler:
                 options.add_argument("--disable-blink-features=AutomationControlled")
                 options.add_experimental_option("excludeSwitches", ["enable-automation"])
                 options.add_experimental_option('useAutomationExtension', False)
-                
+
                 service = Service(ChromeDriverManager().install())
                 self.driver = webdriver.Chrome(service=service, options=options)
                 self.wait = WebDriverWait(self.driver, 10)
-            
+                self.logger.info("Browser session created successfully")
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Error setting up browser: {e}")
             return False
@@ -185,44 +219,59 @@ class BrowserHandler:
                 status=TaskStatus.FAILED,
                 message="No target specified for click"
             )
-        
+
         try:
+            # Check if browser session is still valid
+            if not self._ensure_browser_ready():
+                return TaskResult(
+                    status=TaskStatus.FAILED,
+                    message="Browser session is not available"
+                )
+
             # Try different strategies to find the element
             element = None
-            
+
             # Try by text content
             try:
                 element = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{target}')]")
             except NoSuchElementException:
                 pass
-            
+            except Exception as e:
+                self.logger.warning(f"Error searching by text: {e}")
+
             # Try by link text
             if not element:
                 try:
                     element = self.driver.find_element(By.LINK_TEXT, target)
                 except NoSuchElementException:
                     pass
-            
+                except Exception as e:
+                    self.logger.warning(f"Error searching by link text: {e}")
+
             # Try by partial link text
             if not element:
                 try:
                     element = self.driver.find_element(By.PARTIAL_LINK_TEXT, target)
                 except NoSuchElementException:
                     pass
-            
+                except Exception as e:
+                    self.logger.warning(f"Error searching by partial link text: {e}")
+
             # Try by button text
             if not element:
                 try:
                     element = self.driver.find_element(By.XPATH, f"//button[contains(text(), '{target}')]")
                 except NoSuchElementException:
                     pass
-            
+                except Exception as e:
+                    self.logger.warning(f"Error searching by button text: {e}")
+
             if element:
                 # Scroll to element and click
                 self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
                 time.sleep(0.5)
                 element.click()
-                
+
                 return TaskResult(
                     status=TaskStatus.COMPLETED,
                     message=f"Clicked on '{target}'"
@@ -232,8 +281,19 @@ class BrowserHandler:
                     status=TaskStatus.FAILED,
                     message=f"Could not find element '{target}' to click"
                 )
-                
+
         except Exception as e:
+            # Check if it's a session error
+            error_msg = str(e)
+            if "invalid session id" in error_msg.lower() or "session deleted" in error_msg.lower():
+                self.logger.error("Browser session was closed unexpectedly")
+                self.driver = None
+                self.wait = None
+                return TaskResult(
+                    status=TaskStatus.FAILED,
+                    message="Browser was closed. Please try the command again."
+                )
+
             return TaskResult(
                 status=TaskStatus.FAILED,
                 message=f"Error clicking element: {str(e)}"
@@ -280,6 +340,38 @@ class BrowserHandler:
     def _handle_open_url(self, command: ParsedCommand) -> TaskResult:
         """Handle opening URLs."""
         return self._handle_navigate(command)
+    
+    def _handle_close(self, command: ParsedCommand) -> TaskResult:
+        """Handle closing the browser."""
+        try:
+            if self.driver:
+                self.close_browser()
+                return TaskResult(
+                    status=TaskStatus.COMPLETED,
+                    message="Browser closed successfully"
+                )
+            else:
+                # Try to close system chrome
+                import subprocess
+                import os
+                
+                if os.name == 'nt':
+                    subprocess.run(["taskkill", "/IM", "chrome.exe", "/F"], capture_output=True)
+                    return TaskResult(
+                        status=TaskStatus.COMPLETED,
+                        message="Closed system Chrome browser"
+                    )
+                else:
+                    return TaskResult(
+                        status=TaskStatus.FAILED,
+                        message="System browser close only supported on Windows"
+                    )
+
+        except Exception as e:
+            return TaskResult(
+                status=TaskStatus.FAILED,
+                message=f"Error closing browser: {str(e)}"
+            )
     
     def scroll_page(self, direction: str = "down", amount: int = 3) -> TaskResult:
         """Scroll the page."""
@@ -336,5 +428,14 @@ class BrowserHandler:
     def close_browser(self):
         """Close the browser."""
         if self.driver:
-            self.driver.quit()
-            self.driver = None
+            try:
+                self.driver.quit()
+            except Exception as e:
+                self.logger.warning(f"Error closing browser: {e}")
+            finally:
+                self.driver = None
+                self.wait = None
+
+    def cleanup(self):
+        """Cleanup resources."""
+        self.close_browser()

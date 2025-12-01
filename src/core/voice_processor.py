@@ -110,33 +110,45 @@ class VoiceProcessor:
             print("❌ Speech recognition not available (PyAudio not installed)")
             return None
 
+        # Helper to avoid Windows console UnicodeEncodeError for emojis
+        def _safe_print(message: str):
+            try:
+                import re
+                clean = re.sub(r'[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]', '', message)
+                print(clean)
+            except Exception:
+                try:
+                    print(str(message).encode('utf-8', errors='ignore').decode('utf-8', errors='ignore'))
+                except Exception:
+                    pass
+
         try:
-            print("🎤 Listening... (speak now)")
+            _safe_print("🎤 Listening... (speak now)")
             with self.microphone as source:
                 # Adjust for ambient noise
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                print("🎤 Ready - speak your command...")
+                _safe_print("🎤 Ready - speak your command...")
 
                 audio = self.recognizer.listen(source,
                                              timeout=self.timeout,
                                              phrase_time_limit=self.phrase_timeout)
 
-            print("🔄 Processing speech...")
+            _safe_print("🔄 Processing speech...")
             text = self.recognizer.recognize_google(audio, language=language)
-            print(f"✅ Heard: '{text}'")
+            _safe_print(f"✅ Heard: '{text}'")
             return text.lower().strip()
 
         except sr.WaitTimeoutError:
-            print("⏰ No speech detected within timeout")
+            _safe_print("⏰ No speech detected within timeout")
             return None
         except sr.UnknownValueError:
-            print("❓ Could not understand audio - please speak clearly")
+            _safe_print("❓ Could not understand audio - please speak clearly")
             return None
         except sr.RequestError as e:
-            print(f"❌ Error with speech recognition service: {e}")
+            _safe_print(f"❌ Error with speech recognition service: {e}")
             return None
         except Exception as e:
-            print(f"❌ Unexpected error in speech recognition: {e}")
+            _safe_print(f"❌ Unexpected error in speech recognition: {e}")
             return None
     
     def start_continuous_listening(self, callback: Callable[[str], None], language: str = "en-US"):

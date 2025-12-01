@@ -1,0 +1,15 @@
+{
+  "name": "Macro_1764491167",
+  "shortcut_key": "Ctrl+Shift+Enter",
+  "created_at": 1764491220.593804,
+  "duration": 0.0,
+  "events": [
+    {
+      "t": 0.0,
+      "type": "key_press",
+      "data": {
+        "key": "Key.enter"
+      }
+    }
+  ]
+}

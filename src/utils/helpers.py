@@ -33,7 +33,8 @@ def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> lo
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_file) if log_file else logging.NullHandler()
+            # Ensure UTF-8 for file handler to avoid encoding errors with non-ASCII
+            logging.FileHandler(log_file, encoding='utf-8') if log_file else logging.NullHandler()
         ]
     )
     

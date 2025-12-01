@@ -4,13 +4,26 @@ Gmail-specific automation handler using web browser.
 
 import time
 import logging
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.common.exceptions import TimeoutException, NoSuchElementException
+    HAS_SELENIUM = True
+except ImportError:
+    HAS_SELENIUM = False
+    webdriver = None
+    By = None
+    WebDriverWait = None
+    EC = None
+    Service = None
+    ChromeDriverManager = None
+    TimeoutException = Exception
+    NoSuchElementException = Exception
 
 from ...core.screen_agent import ScreenAgent
 from ...core.nlp_processor import ParsedCommand, ActionType

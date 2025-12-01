@@ -1,0 +1,71 @@
+{
+  "name": "dolby atmos",
+  "shortcut_key": "",
+  "created_at": 1764485222.623303,
+  "duration": 1.447406530380249,
+  "events": [
+    {
+      "t": 0.0,
+      "type": "key_press",
+      "data": {
+        "key": "d"
+      }
+    },
+    {
+      "t": 0.10323548316955566,
+      "type": "key_release",
+      "data": {
+        "key": "d"
+      }
+    },
+    {
+      "t": 0.15126514434814453,
+      "type": "key_press",
+      "data": {
+        "key": "o"
+      }
+    },
+    {
+      "t": 0.23154592514038086,
+      "type": "key_release",
+      "data": {
+        "key": "o"
+      }
+    },
+    {
+      "t": 0.3832831382751465,
+      "type": "key_press",
+      "data": {
+        "key": "l"
+      }
+    },
+    {
+      "t": 0.4633023738861084,
+      "type": "key_release",
+      "data": {
+        "key": "l"
+      }
+    },
+    {
+      "t": 1.1915664672851562,
+      "type": "key_press",
+      "data": {
+        "key": "b"
+      }
+    },
+    {
+      "t": 1.279554843902588,
+      "type": "key_release",
+      "data": {
+        "key": "b"
+      }
+    },
+    {
+      "t": 1.447406530380249,
+      "type": "key_press",
+      "data": {
+        "key": "y"
+      }
+    }
+  ]
+}

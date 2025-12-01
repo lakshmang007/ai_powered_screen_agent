@@ -5,8 +5,14 @@ VSCode-specific automation handler.
 import time
 import logging
 import subprocess
-import pygetwindow as gw
 from typing import Optional
+
+try:
+    import pygetwindow as gw
+    HAS_PYGETWINDOW = True
+except ImportError:
+    HAS_PYGETWINDOW = False
+    gw = None
 
 from ...core.screen_agent import ScreenAgent
 from ...core.nlp_processor import ParsedCommand, ActionType
@@ -37,8 +43,16 @@ class VSCodeHandler:
             TaskResult with execution status
         """
         try:
+            # For CLOSE action, we don't want to launch VSCode if it's not running
+            allow_launch = command.action != ActionType.CLOSE
+            
             # Ensure VSCode is open and focused
-            if not self._ensure_vscode_active():
+            if not self._ensure_vscode_active(allow_launch=allow_launch):
+                if command.action == ActionType.CLOSE:
+                    return TaskResult(
+                        status=TaskStatus.COMPLETED,
+                        message="VSCode is not running"
+                    )
                 return TaskResult(
                     status=TaskStatus.FAILED,
                     message="Could not open or focus VSCode"
@@ -52,6 +66,8 @@ class VSCodeHandler:
                 return self._handle_search_action(command)
             elif command.action == ActionType.TYPE:
                 return self._handle_type_action(command)
+            elif command.action == ActionType.CLOSE:
+                return self._handle_close_action(command)
             else:
                 return TaskResult(
                     status=TaskStatus.FAILED,
@@ -64,37 +80,55 @@ class VSCodeHandler:
                 message=f"VSCode handler error: {str(e)}"
             )
     
-    def _ensure_vscode_active(self) -> bool:
+    def _ensure_vscode_active(self, allow_launch: bool = True) -> bool:
         """Ensure VSCode is open and active."""
         try:
             # Look for VSCode windows
             vscode_windows = []
-            for window in gw.getAllWindows():
-                if 'visual studio code' in window.title.lower() or 'code' in window.title.lower():
-                    vscode_windows.append(window)
+            if gw:
+                for window in gw.getAllWindows():
+                    if 'visual studio code' in window.title.lower() or 'code' in window.title.lower():
+                        vscode_windows.append(window)
             
             if vscode_windows:
                 # Activate the first VSCode window found
                 self.vscode_window = vscode_windows[0]
-                self.vscode_window.activate()
+                try:
+                    if self.vscode_window.isMinimized:
+                        self.vscode_window.restore()
+                        time.sleep(0.5)
+                    self.vscode_window.activate()
+                except Exception as e:
+                    # Ignore "Error code from Windows: 0" which actually means success sometimes
+                    if "Error code from Windows: 0" in str(e):
+                        pass
+                    else:
+                        self.logger.warning(f"Error activating VSCode window: {e}")
+                
                 time.sleep(1)
                 return True
-            else:
+            elif allow_launch:
                 # Launch VSCode
                 self.logger.info("Launching VSCode...")
                 subprocess.Popen(['code'], shell=True)
                 time.sleep(4)  # Wait for VSCode to start
                 
                 # Try to find the window again
-                for _ in range(10):  # Try for 10 seconds
-                    for window in gw.getAllWindows():
-                        if 'visual studio code' in window.title.lower():
-                            self.vscode_window = window
-                            self.vscode_window.activate()
-                            time.sleep(1)
-                            return True
-                    time.sleep(1)
+                if gw:
+                    for _ in range(10):  # Try for 10 seconds
+                        for window in gw.getAllWindows():
+                            if 'visual studio code' in window.title.lower():
+                                self.vscode_window = window
+                                try:
+                                    self.vscode_window.activate()
+                                except:
+                                    pass
+                                time.sleep(1)
+                                return True
+                        time.sleep(1)
                 
+                return False
+            else:
                 return False
                 
         except Exception as e:
@@ -315,4 +349,19 @@ class VSCodeHandler:
             return TaskResult(
                 status=TaskStatus.FAILED,
                 message=f"Error running terminal command: {str(e)}"
+            )
+
+    def _handle_close_action(self, command: ParsedCommand) -> TaskResult:
+        """Handle close actions in VSCode."""
+        try:
+            # Use Alt+F4 to close VSCode
+            self.screen_agent.key_combination('alt', 'f4')
+            return TaskResult(
+                status=TaskStatus.COMPLETED,
+                message="Closed Visual Studio Code"
+            )
+        except Exception as e:
+            return TaskResult(
+                status=TaskStatus.FAILED,
+                message=f"Error closing VSCode: {str(e)}"
             )

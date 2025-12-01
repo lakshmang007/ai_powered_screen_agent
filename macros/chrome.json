@@ -1,0 +1,70 @@
+{
+  "name": "chrome",
+  "shortcut_key": "",
+  "created_at": 1764580098.4609158,
+  "duration": 0.42623305320739746,
+  "events": [
+    {
+      "t": 0.0,
+      "type": "key_release",
+      "data": {
+        "key": "c"
+      }
+    },
+    {
+      "t": 0.0004570484161376953,
+      "type": "key_press",
+      "data": {
+        "key": "h"
+      }
+    },
+    {
+      "t": 0.09588932991027832,
+      "type": "key_release",
+      "data": {
+        "key": "h"
+      }
+    },
+    {
+      "t": 0.31194067001342773,
+      "type": "key_press",
+      "data": {
+        "key": "r"
+      }
+    },
+    {
+      "t": 0.3923676013946533,
+      "type": "key_release",
+      "data": {
+        "key": "r"
+      }
+    },
+    {
+      "t": 0.5545415878295898,
+      "type": "key_press",
+      "data": {
+        "key": "Key.enter"
+      }
+    },
+    {
+      "t": 0.3383042812347412,
+      "type": "mouse_click",
+      "data": {
+        "x": 1256,
+        "y": 535,
+        "button": "Button.left",
+        "pressed": true
+      }
+    },
+    {
+      "t": 0.42623305320739746,
+      "type": "mouse_click",
+      "data": {
+        "x": 1256,
+        "y": 535,
+        "button": "Button.left",
+        "pressed": false
+      }
+    }
+  ]
+}

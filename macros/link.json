@@ -1,0 +1,85 @@
+{
+  "name": "link",
+  "shortcut_key": "Key.ctrl_r",
+  "created_at": 1764492177.569433,
+  "duration": 2.400031805038452,
+  "events": [
+    {
+      "t": 0.0,
+      "type": "key_press",
+      "data": {
+        "key": "Key.cmd"
+      }
+    },
+    {
+      "t": 0.11179971694946289,
+      "type": "key_release",
+      "data": {
+        "key": "Key.cmd"
+      }
+    },
+    {
+      "t": 0.8083033561706543,
+      "type": "key_press",
+      "data": {
+        "key": "l"
+      }
+    },
+    {
+      "t": 0.8799543380737305,
+      "type": "key_release",
+      "data": {
+        "key": "l"
+      }
+    },
+    {
+      "t": 0.9853518009185791,
+      "type": "key_press",
+      "data": {
+        "key": "i"
+      }
+    },
+    {
+      "t": 1.0322668552398682,
+      "type": "key_release",
+      "data": {
+        "key": "i"
+      }
+    },
+    {
+      "t": 1.1601428985595703,
+      "type": "key_press",
+      "data": {
+        "key": "n"
+      }
+    },
+    {
+      "t": 1.2240080833435059,
+      "type": "key_release",
+      "data": {
+        "key": "n"
+      }
+    },
+    {
+      "t": 1.3282289505004883,
+      "type": "key_press",
+      "data": {
+        "key": "k"
+      }
+    },
+    {
+      "t": 1.4162015914916992,
+      "type": "key_release",
+      "data": {
+        "key": "k"
+      }
+    },
+    {
+      "t": 2.400031805038452,
+      "type": "key_press",
+      "data": {
+        "key": "Key.enter"
+      }
+    }
+  ]
+}

@@ -5,13 +5,26 @@ LinkedIn-specific automation handler using web browser.
 import time
 import logging
 import os
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.common.exceptions import TimeoutException, NoSuchElementException
+    HAS_SELENIUM = True
+except ImportError:
+    HAS_SELENIUM = False
+    webdriver = None
+    By = None
+    WebDriverWait = None
+    EC = None
+    Service = None
+    ChromeDriverManager = None
+    TimeoutException = Exception
+    NoSuchElementException = Exception
 
 from ...core.screen_agent import ScreenAgent
 from ...core.nlp_processor import ParsedCommand, ActionType
@@ -44,6 +57,10 @@ class LinkedInHandler:
             TaskResult with execution status
         """
         try:
+            # Handle CLOSE action without initializing browser
+            if command.action == ActionType.CLOSE:
+                return self._handle_close_linkedin()
+            
             # Initialize browser if not already done
             if not self._ensure_browser_ready():
                 return TaskResult(
@@ -93,6 +110,29 @@ class LinkedInHandler:
         except Exception as e:
             self.logger.error(f"Error setting up browser: {e}")
             return False
+    
+    def _handle_close_linkedin(self) -> TaskResult:
+        """Handle closing LinkedIn browser."""
+        try:
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+                self.wait = None
+                self.is_logged_in = False
+                return TaskResult(
+                    status=TaskStatus.COMPLETED,
+                    message="LinkedIn browser closed"
+                )
+            else:
+                return TaskResult(
+                    status=TaskStatus.COMPLETED,
+                    message="LinkedIn browser was not open"
+                )
+        except Exception as e:
+            return TaskResult(
+                status=TaskStatus.FAILED,
+                message=f"Error closing LinkedIn: {str(e)}"
+            )
     
     def _handle_open_linkedin(self, command: ParsedCommand) -> TaskResult:
         """Handle opening LinkedIn."""

@@ -8,8 +8,20 @@ import threading
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass
 from enum import Enum
-import psutil
-import pygetwindow as gw
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    psutil = None
+
+try:
+    import pygetwindow as gw
+    HAS_PYGETWINDOW = True
+except ImportError:
+    HAS_PYGETWINDOW = False
+    gw = None
 
 from ..core.screen_agent import ScreenAgent
 from ..core.nlp_processor import ParsedCommand, ActionType, ApplicationType
@@ -21,6 +33,7 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    AMBIGUOUS = "ambiguous"
 
 @dataclass
 class TaskResult:
@@ -127,7 +140,7 @@ class TaskEngine:
     
     def _execute_generic_command(self, command: ParsedCommand) -> TaskResult:
         """Execute command using generic logic."""
-        
+
         if command.action == ActionType.OPEN:
             return self._handle_open_action(command)
         elif command.action == ActionType.CREATE:
@@ -136,12 +149,16 @@ class TaskEngine:
             return self._handle_click_action(command)
         elif command.action == ActionType.TYPE:
             return self._handle_type_action(command)
+        elif command.action == ActionType.PRESS:
+            return self._handle_press_action(command)
         elif command.action == ActionType.SEARCH:
             return self._handle_search_action(command)
         elif command.action == ActionType.SCROLL:
             return self._handle_scroll_action(command)
         elif command.action == ActionType.CLOSE:
             return self._handle_close_action(command)
+        elif command.action == ActionType.MINIMIZE:
+            return self._handle_minimize_action(command)
         else:
             return TaskResult(
                 status=TaskStatus.FAILED,
@@ -183,6 +200,149 @@ class TaskEngine:
                 status=TaskStatus.FAILED,
                 message=f"Failed to open {app_name}: {str(e)}"
             )
+
+    def _handle_minimize_action(self, command: ParsedCommand) -> TaskResult:
+        """Handle minimize actions."""
+        target = command.target
+        raw_text = command.raw_text.lower()
+        
+        # Check for "minimize all"
+        minimize_all = "all" in raw_text and ("window" in raw_text or "app" in raw_text or "everything" in raw_text or "minimize all" in raw_text)
+        
+        if minimize_all:
+            if HAS_PYGETWINDOW:
+                try:
+                    windows = gw.getAllWindows()
+                    count = 0
+                    for window in windows:
+                        if window.title and not window.isMinimized:
+                            window.minimize()
+                            count += 1
+                    return TaskResult(
+                        status=TaskStatus.COMPLETED,
+                        message=f"Minimized {count} windows"
+                    )
+                except Exception as e:
+                    # Fallback to Win+D or Win+M
+                    self.screen_agent.key_combination('win', 'd')
+                    return TaskResult(
+                        status=TaskStatus.COMPLETED,
+                        message="Minimized all windows (Win+D)"
+                    )
+            else:
+                self.screen_agent.key_combination('win', 'd')
+                return TaskResult(
+                    status=TaskStatus.COMPLETED,
+                    message="Minimized all windows (Win+D)"
+                )
+
+        if target:
+            if HAS_PYGETWINDOW:
+                try:
+                    windows = gw.getAllWindows()
+                    minimized_count = 0
+                    for window in windows:
+                        if window.title and target.lower() in window.title.lower():
+                            window.minimize()
+                            minimized_count += 1
+                    
+                    if minimized_count > 0:
+                        return TaskResult(
+                            status=TaskStatus.COMPLETED,
+                            message=f"Minimized {minimized_count} window(s) matching '{target}'"
+                        )
+                    else:
+                        return TaskResult(
+                            status=TaskStatus.FAILED,
+                            message=f"No open windows found matching '{target}'"
+                        )
+                except Exception as e:
+                    return TaskResult(
+                        status=TaskStatus.FAILED,
+                        message=f"Error minimizing '{target}': {str(e)}"
+                    )
+        
+        # Minimize active window
+        if HAS_PYGETWINDOW:
+            try:
+                window = gw.getActiveWindow()
+                if window:
+                    window.minimize()
+                    return TaskResult(
+                        status=TaskStatus.COMPLETED,
+                        message="Minimized active window"
+                    )
+            except:
+                pass
+        
+        # Fallback
+        self.screen_agent.key_combination('win', 'down')
+        return TaskResult(
+            status=TaskStatus.COMPLETED,
+            message="Minimized active window"
+        )
+
+    def _handle_close_action(self, command: ParsedCommand) -> TaskResult:
+        """Handle close actions."""
+        target = command.target
+        
+        # If target is not explicitly set but application is known, use application name
+        if not target and command.application != ApplicationType.UNKNOWN:
+            target = command.application.value
+
+        if target:
+            # Try to close specific application/window
+            if HAS_PYGETWINDOW:
+                try:
+                    # Get all windows
+                    windows = gw.getAllWindows()
+                    closed_count = 0
+                    
+                    # Debug: List all open windows
+                    open_titles = [w.title for w in windows if w.title]
+                    self.logger.info(f"Open windows: {open_titles}")
+                    
+                    for window in windows:
+                        # Check if target is in window title (case insensitive)
+                        if window.title and target.lower() in window.title.lower():
+                            self.logger.info(f"Closing window: {window.title}")
+                            window.close()
+                            closed_count += 1
+                    
+                    if closed_count > 0:
+                        return TaskResult(
+                            status=TaskStatus.COMPLETED,
+                            message=f"Closed {closed_count} window(s) matching '{target}'"
+                        )
+                    else:
+                        return TaskResult(
+                            status=TaskStatus.FAILED,
+                            message=f"No open windows found matching '{target}'. Available: {open_titles[:5]}..."
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error closing window: {e}")
+                    return TaskResult(
+                        status=TaskStatus.FAILED,
+                        message=f"Error closing '{target}': {str(e)}"
+                    )
+            else:
+                 return TaskResult(
+                    status=TaskStatus.FAILED,
+                    message="Window management library not available"
+                )
+
+        # If no target specified, close current window
+        # Try Alt+F4 to close current window
+        if self.screen_agent.key_combination('alt', 'f4'):
+            return TaskResult(
+                status=TaskStatus.COMPLETED,
+                message="Closed current window"
+            )
+        
+        return TaskResult(
+            status=TaskStatus.FAILED,
+            message="Failed to close window"
+        )
     
     def _handle_create_action(self, command: ParsedCommand) -> TaskResult:
         """Handle create actions (files, folders, etc.)."""
@@ -202,48 +362,267 @@ class TaskEngine:
         )
     
     def _handle_click_action(self, command: ParsedCommand) -> TaskResult:
-        """Handle click actions."""
+        """Handle click actions with spatial reasoning and template matching."""
         if not command.target:
             return TaskResult(
                 status=TaskStatus.FAILED,
                 message="No target specified for click action"
             )
         
+        # Check for window controls (minimize, maximize, close)
+        window_controls = {
+            'minimize': 'minimize.png',
+            'maximize': 'maximize.png',
+            'close': 'close.png',
+            'close button': 'close.png',
+            'minimize button': 'minimize.png',
+            'maximize button': 'maximize.png'
+        }
+        
+        target_lower = command.target.lower()
+        if target_lower in window_controls:
+            import os
+            template_name = window_controls[target_lower]
+            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', template_name)
+            
+            if os.path.exists(template_path):
+                self.logger.info(f"Looking for window control: {template_name}")
+                match = self.screen_agent.find_element_by_image(template_path)
+                if match:
+                    return self._click_match(match, command.target)
+                else:
+                    # Fallback to text search if template fails (e.g. "Close" text)
+                    self.logger.info("Template match failed, falling back to text search")
+            else:
+                self.logger.warning(f"Template not found: {template_path}")
+
         # Try to find element by text
-        text_matches = self.screen_agent.find_text_on_screen(command.target)
-        if text_matches:
-            x, y, w, h = text_matches[0]
+        matches = self.screen_agent.find_text_on_screen(command.target)
+        
+        if not matches:
+             return TaskResult(
+                status=TaskStatus.FAILED,
+                message=f"Could not find '{command.target}' to click"
+            )
+
+        # Handle single match
+        if len(matches) == 1:
+            return self._click_match(matches[0], command.target)
+
+        # Handle multiple matches
+        # Check for spatial context in the command
+        spatial_context = self._extract_spatial_context(command.raw_text)
+        
+        if spatial_context:
+            best_match = self._resolve_spatial_ambiguity(matches, spatial_context)
+            if best_match:
+                return self._click_match(best_match, command.target)
+            else:
+                return TaskResult(
+                    status=TaskStatus.FAILED,
+                    message=f"Found multiple '{command.target}' but couldn't resolve '{spatial_context['relation']}' '{spatial_context['reference']}'"
+                )
+        
+        # If no spatial context, return ambiguous status
+        return TaskResult(
+            status=TaskStatus.AMBIGUOUS,
+            message=f"Found {len(matches)} instances of '{command.target}'. Please specify which one (e.g., 'near File').",
+            data={'matches': matches, 'target': command.target, 'count': len(matches)}
+        )
+
+    def _click_match(self, match, target_name):
+        """Helper to click a specific match."""
+        x, y, w, h = match
+        center_x = x + w // 2
+        center_y = y + h // 2
+        
+        if self.screen_agent.click_element(center_x, center_y):
+            return TaskResult(
+                status=TaskStatus.COMPLETED,
+                message=f"Clicked on '{target_name}'"
+            )
+        return TaskResult(
+            status=TaskStatus.FAILED,
+            message=f"Failed to click '{target_name}'"
+        )
+
+    def _extract_spatial_context(self, text: str) -> Optional[Dict[str, str]]:
+        """Extract spatial relation and reference object from text."""
+        import re
+        text = text.lower()
+        
+        # Define spatial patterns
+        patterns = [
+            (r'\b(near|beside|next to|by)\s+(.+)', 'near'),
+            (r'\b(below|under|underneath)\s+(.+)', 'below'),
+            (r'\b(above|over)\s+(.+)', 'above'),
+            (r'\b(right of|to the right of)\s+(.+)', 'right'),
+            (r'\b(left of|to the left of)\s+(.+)', 'left')
+        ]
+        
+        for pattern, relation in patterns:
+            match = re.search(pattern, text)
+            if match:
+                reference = match.group(2).strip()
+                # Clean up reference (remove common words if needed)
+                return {'relation': relation, 'reference': reference}
+        
+        return None
+
+    def _resolve_spatial_ambiguity(self, matches, context):
+        """Resolve ambiguity using spatial context."""
+        relation = context['relation']
+        reference_text = context['reference']
+        
+        # Find the reference object
+        ref_matches = self.screen_agent.find_text_on_screen(reference_text)
+        if not ref_matches:
+            return None
+            
+        # Use the first found reference object (simplification)
+        ref_x, ref_y, ref_w, ref_h = ref_matches[0]
+        ref_center_x = ref_x + ref_w // 2
+        ref_center_y = ref_y + ref_h // 2
+        
+        best_match = None
+        min_dist = float('inf')
+        
+        for match in matches:
+            x, y, w, h = match
             center_x = x + w // 2
             center_y = y + h // 2
             
-            if self.screen_agent.click_element(center_x, center_y):
-                return TaskResult(
-                    status=TaskStatus.COMPLETED,
-                    message=f"Clicked on '{command.target}'"
-                )
-        
-        return TaskResult(
-            status=TaskStatus.FAILED,
-            message=f"Could not find '{command.target}' to click"
-        )
+            # Calculate distance
+            dist = ((center_x - ref_center_x)**2 + (center_y - ref_center_y)**2)**0.5
+            
+            # Check directional constraints
+            valid = True
+            if relation == 'below' and center_y <= ref_center_y: valid = False
+            if relation == 'above' and center_y >= ref_center_y: valid = False
+            if relation == 'right' and center_x <= ref_center_x: valid = False
+            if relation == 'left' and center_x >= ref_center_x: valid = False
+            
+            if valid and dist < min_dist:
+                min_dist = dist
+                best_match = match
+                
+        return best_match
     
     def _handle_type_action(self, command: ParsedCommand) -> TaskResult:
         """Handle typing actions."""
-        if not command.target:
+        target_text = command.target
+        
+        if not target_text:
             return TaskResult(
                 status=TaskStatus.FAILED,
                 message="No text specified for type action"
             )
-        
-        if self.screen_agent.type_text(command.target):
+
+        # Check for code generation request
+        # e.g., "type a code of adding two numbers", "write code for hello world"
+        lower_text = target_text.lower()
+        if "code" in lower_text and ("type" in lower_text or "write" in lower_text or "generate" in lower_text or "of" in lower_text or "for" in lower_text):
+            # Attempt to generate code
+            generated_code = self._generate_code_snippet(target_text)
+            if generated_code:
+                target_text = generated_code
+                self.logger.info(f"Generated code: {target_text}")
+
+        if self.screen_agent.type_text(target_text):
             return TaskResult(
                 status=TaskStatus.COMPLETED,
-                message=f"Typed: '{command.target}'"
+                message=f"Typed: '{target_text}'"
             )
-        
+
         return TaskResult(
             status=TaskStatus.FAILED,
             message="Failed to type text"
+        )
+
+    def _generate_code_snippet(self, request: str) -> Optional[str]:
+        """
+        Generate simple code snippets based on request.
+        In a full implementation, this would call an LLM.
+        """
+        request = request.lower()
+        
+        # Python snippets
+        if "python" in request or "code" in request:
+            if "add" in request and "two number" in request:
+                return "def add(a, b):\n    return a + b\n\nresult = add(5, 3)\nprint(result)"
+            elif "hello world" in request:
+                return "print('Hello, World!')"
+            elif "factorial" in request:
+                return "def factorial(n):\n    return 1 if n <= 1 else n * factorial(n-1)"
+            elif "fibonacci" in request:
+                return "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        print(a)\n        a, b = b, a + b"
+            elif "loop" in request or "for loop" in request:
+                return "for i in range(10):\n    print(i)"
+            elif "if else" in request:
+                return "if x > 0:\n    print('Positive')\nelse:\n    print('Non-positive')"
+        
+        # HTML snippets
+        if "html" in request:
+            if "boilerplate" in request or "structure" in request:
+                return "<!DOCTYPE html>\n<html>\n<head>\n    <title>Page</title>\n</head>\n<body>\n    <h1>Hello</h1>\n</body>\n</html>"
+            elif "button" in request:
+                return "<button onclick='alert(\"Clicked!\")'>Click Me</button>"
+        
+        # If it looks like a code request but we don't have a template, 
+        # try to extract the subject and make a best guess or return None
+        # to fall back to typing the literal text (or maybe a comment)
+        if "code of" in request:
+            subject = request.split("code of")[-1].strip()
+            return f"# Code for {subject}\n# (AI generation not fully connected)"
+            
+        return None
+
+    def _handle_press_action(self, command: ParsedCommand) -> TaskResult:
+        """Handle pressing keyboard keys."""
+        # Extract the key to press
+        key = command.target or command.parameters.get('key', '')
+
+        if not key:
+            # Try to extract from raw text
+            import re
+            # Check for Windows key patterns
+            if re.search(r'(windows\s+key|win\s+key)', command.raw_text.lower()):
+                key = 'win'
+            else:
+                match = re.search(r'press\s+(\w+)', command.raw_text.lower())
+                if match:
+                    key = match.group(1)
+
+        if not key:
+            return TaskResult(
+                status=TaskStatus.FAILED,
+                message="No key specified for press action"
+            )
+
+        # Map common key names
+        key_map = {
+            'return': 'enter',
+            'esc': 'escape',
+            'del': 'delete',
+            'spacebar': 'space',
+            'windows': 'win',
+            'windows key': 'win',
+            'win key': 'win'
+        }
+        key = key_map.get(key.lower(), key.lower())
+
+        try:
+            if self.screen_agent.press_key(key):
+                return TaskResult(
+                    status=TaskStatus.COMPLETED,
+                    message=f"Pressed key: {key}"
+                )
+        except Exception as e:
+            self.logger.error(f"Error pressing key: {e}")
+
+        return TaskResult(
+            status=TaskStatus.FAILED,
+            message=f"Failed to press key: {key}"
         )
     
     def _handle_search_action(self, command: ParsedCommand) -> TaskResult:
@@ -286,6 +665,50 @@ class TaskEngine:
     
     def _handle_close_action(self, command: ParsedCommand) -> TaskResult:
         """Handle close actions."""
+        target = command.target
+        
+        # If target is not explicitly set but application is known, use application name
+        if not target and command.application != ApplicationType.UNKNOWN:
+            target = command.application.value
+
+        if target:
+            # Try to close specific application/window
+            if HAS_PYGETWINDOW:
+                try:
+                    # Get all windows
+                    windows = gw.getAllWindows()
+                    closed_count = 0
+                    
+                    for window in windows:
+                        # Check if target is in window title (case insensitive)
+                        if window.title and target.lower() in window.title.lower():
+                            self.logger.info(f"Closing window: {window.title}")
+                            window.close()
+                            closed_count += 1
+                    
+                    if closed_count > 0:
+                        return TaskResult(
+                            status=TaskStatus.COMPLETED,
+                            message=f"Closed {closed_count} window(s) matching '{target}'"
+                        )
+                    else:
+                        return TaskResult(
+                            status=TaskStatus.FAILED,
+                            message=f"No open windows found matching '{target}'"
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error closing window: {e}")
+                    return TaskResult(
+                        status=TaskStatus.FAILED,
+                        message=f"Error closing '{target}': {str(e)}"
+                    )
+            else:
+                 return TaskResult(
+                    status=TaskStatus.FAILED,
+                    message="Window management library not available"
+                )
+
+        # If no target specified, close current window
         # Try Alt+F4 to close current window
         if self.screen_agent.key_combination('alt', 'f4'):
             return TaskResult(
