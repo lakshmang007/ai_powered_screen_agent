@@ -1,5 +1,5 @@
 # AI-Powered Screen Agent
-
+start from .
 An intelligent automation tool that takes text or voice commands and performs automated tasks by interacting with your screen and applications.
 
 ## Features
