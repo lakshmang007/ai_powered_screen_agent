@@ -13,6 +13,7 @@ import logging
 from typing import Optional, Callable
 import threading
 import queue
+import re
 import time
 
 # Speech recognition
@@ -70,6 +71,7 @@ class IndianEnglishVoiceProcessor:
         self.language = language
         self.use_whisper = use_whisper and HAS_OPENAI
         self.use_gpt_enhancement = use_gpt_enhancement and HAS_OPENAI
+        self._init_stt_settings()
         
         # Setup OpenAI if available
         self.openai_client = None
@@ -88,12 +90,14 @@ class IndianEnglishVoiceProcessor:
         if HAS_SPEECH_RECOGNITION:
             self.recognizer = sr.Recognizer()
 
-            # Optimized settings for Indian English - VERY PATIENT
+            # End-of-speech: 1.2s of silence ends a command. 2.0s made every command
+            # feel slow; much below 1s cuts people off mid-sentence.
             self.recognizer.energy_threshold = 300  # Lower for softer speech
             self.recognizer.dynamic_energy_threshold = True
-            self.recognizer.pause_threshold = 2.0  # MUCH longer pauses - won't cut off mid-sentence
-            self.recognizer.phrase_threshold = 0.1  # Very sensitive to start of speech
-            self.recognizer.non_speaking_duration = 1.5  # Wait 1.5 seconds of silence before stopping
+            self.recognizer.pause_threshold = float(os.getenv("VOICE_PAUSE_SECONDS", "1.2"))
+            self.recognizer.phrase_threshold = 0.2  # ignore clicks/pops shorter than this
+            self.recognizer.non_speaking_duration = min(0.8, self.recognizer.pause_threshold)
+            self._last_calibration = 0.0
             
             try:
                 self.microphone = sr.Microphone()
@@ -103,7 +107,8 @@ class IndianEnglishVoiceProcessor:
                 try:
                     with self.microphone as source:
                         self.logger.info("Calibrating for ambient noise (2 seconds)...")
-                        self.recognizer.adjust_for_ambient_noise(source, duration=1)  # Reduced to 1 second
+                        self.recognizer.adjust_for_ambient_noise(source, duration=1)
+                    self._last_calibration = time.time()
                     self.logger.info("Speech recognition initialized for Indian English")
                 except Exception as calib_error:
                     self.logger.warning(f"Calibration failed (will use defaults): {calib_error}")
@@ -195,8 +200,11 @@ class IndianEnglishVoiceProcessor:
                 self._safe_print(msg)
                 if status_callback: status_callback(msg)
                 
-                # Short re-calibration per listen; the full calibration ran at startup
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                # Re-calibrate only every couple of minutes (room noise changes slowly);
+                # dynamic_energy_threshold keeps adapting in between. Saves ~0.5s per command.
+                if time.time() - self._last_calibration > 120:
+                    self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                    self._last_calibration = time.time()
                 
                 msg = "🎤 Ready - speak your FULL command..."
                 self._safe_print(msg)
@@ -252,6 +260,19 @@ class IndianEnglishVoiceProcessor:
         Try multiple recognition engines with fallback.
         Priority: Whisper > Google (Indian English) > Google (US English)
         """
+        # Try 0: Whisper on Groq (default when GROQ_API_KEY is set)
+        if getattr(self, "stt_provider", "google") == "groq":
+            try:
+                start = time.time()
+                text = self._transcribe_with_groq(audio)
+                if text:
+                    self.logger.info(f"Recognized with Groq Whisper in {time.time() - start:.2f}s: {text}")
+                    return text
+                self.logger.info("Groq Whisper heard no speech")
+                return None  # silence/noise: don't let Google guess something
+            except Exception as e:
+                self.logger.warning(f"Groq Whisper failed, falling back to Google: {e}")
+
         # Try 1: OpenAI Whisper (best for accents)
         if self.use_whisper and self.openai_client:
             try:
@@ -325,6 +346,13 @@ class IndianEnglishVoiceProcessor:
             r'\bjarves\b': 'jarvis',
             r'\bjar vis\b': 'jarvis',
             r'\bjarvis\b': 'jarvis',
+
+            # Seen in the speech benchmark (tests/scenarios/stt_benchmark.py)
+            r'\b(?:wh?at+s?\s?app?|what\'s\s?app)\b': 'WhatsApp',
+            r'\b(on|in|open|close|via|using|minimi[sz]e)\s+what\'?s\s?up\b': r'\1 WhatsApp',
+            r'\b(?:get|git)\s?hub\b': 'GitHub',
+            r'^sent\b,?': 'send',
+            r'\bdolby (?:axis|axes|excess)\b': 'dolby access',
         }
         
         corrected = text
@@ -333,6 +361,87 @@ class IndianEnglishVoiceProcessor:
         
         return corrected
     
+    # Whisper "hears" these in silence or noise; drop them when nothing else was said
+    WHISPER_HALLUCINATIONS = {
+        "thank you", "thank you very much", "thanks for watching", "thank you for watching",
+        "you", "bye", "bye bye", "okay", "so", "the end", "subscribe", "please subscribe",
+    }
+
+    def _init_stt_settings(self):
+        """Pick the speech-to-text engine. STT_PROVIDER=groq|google (default: groq when
+        GROQ_API_KEY is set, since Whisper handles Indian English far better)."""
+        if not hasattr(self, "logger"):
+            self.logger = logging.getLogger(__name__)
+        key = os.getenv("GROQ_API_KEY", "").strip()
+        provider = os.getenv("STT_PROVIDER", "").strip().lower() or ("groq" if key and not key.startswith("your_") else "google")
+        self.stt_provider = provider
+        self.groq_stt_model = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+        self._groq_stt_client = None
+        if provider == "groq":
+            try:
+                from groq import Groq
+                self._groq_stt_client = Groq(api_key=key, timeout=15)
+            except Exception as e:
+                self.logger.warning(f"Groq Whisper unavailable ({e}); using Google speech recognition")
+                self.stt_provider = "google"
+        self._vocabulary_prompt = self._build_vocabulary_prompt()
+
+    @staticmethod
+    def _build_vocabulary_prompt() -> str:
+        """Words Whisper should expect: our wake word, apps, commands, contacts, macros."""
+        from pathlib import Path
+        import json
+        root = Path(__file__).resolve().parents[2]
+        words = ["JARVIS", "WhatsApp", "Mohith", "Notepad", "VS Code", "Chrome", "YouTube", "Gmail",
+                 "LinkedIn", "Dolby Access", "Spotify", "macro", "minimize", "Windows key"]
+        try:
+            contacts = json.loads((root / "data" / "whatsapp_contacts.json").read_text(encoding="utf-8"))
+            for alias, entry in contacts.items():
+                words.append(entry.get("search", alias) if isinstance(entry, dict) else str(entry))
+        except Exception:
+            pass
+        try:
+            words += [p.stem for p in (root / "macros").glob("*.json") if not p.stem.lower().startswith(("macro_", "scroll_test", "test"))]
+        except Exception:
+            pass
+        seen, unique = set(), []
+        for w in words:
+            if w.lower() not in seen:
+                seen.add(w.lower())
+                unique.append(w)
+        # Whisper uses the prompt as preceding context; a short command-style sentence works best
+        return ("Voice commands for a desktop assistant called JARVIS, e.g. 'open WhatsApp', "
+                "'send I am coming to Mohith on WhatsApp', 'click type a message'. Words: " + ", ".join(unique[:60]) + ".")
+
+    def _transcribe_with_groq(self, audio) -> Optional[str]:
+        """Transcribe with Whisper on Groq (fast, free tier, robust to accents and noise)."""
+        if self._groq_stt_client is None:
+            return None
+        wav = audio.get_wav_data(convert_rate=16000, convert_width=2)
+        result = self._groq_stt_client.audio.transcriptions.create(
+            file=("command.wav", wav),
+            model=self.groq_stt_model,
+            language="en",
+            prompt=self._vocabulary_prompt,
+            response_format="verbose_json",
+            temperature=0.0,
+        )
+        text = (getattr(result, "text", "") or "").strip()
+        segments = getattr(result, "segments", None) or []
+        if segments:
+            def seg(s, key, default):
+                return s.get(key, default) if isinstance(s, dict) else getattr(s, key, default)
+            # Every segment probably silence -> nothing was really said
+            if all(seg(s, "no_speech_prob", 0) > 0.6 for s in segments):
+                return None
+        cleaned = re.sub(r"[^a-z ]", "", text.lower()).strip()
+        if not cleaned or cleaned in self.WHISPER_HALLUCINATIONS:
+            return None
+        # Whisper copies the prompt back when the audio is unintelligible
+        if "voice commands for a desktop assistant" in text.lower():
+            return None
+        return text.rstrip(".!?").strip()
+
     def _transcribe_with_whisper(self, audio) -> Optional[str]:
         """Transcribe with OpenAI Whisper."""
         try:

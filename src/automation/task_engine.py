@@ -101,9 +101,11 @@ class TaskEngine:
             self.logger.info(f"Executing command: {command.action.value} on {command.application.value}")
             
             # Check if we have a specific handler for this application
+            result = None
             if command.application in self.app_handlers:
+                # A handler returns None for actions it doesn't own (e.g. "close WhatsApp")
                 result = self.app_handlers[command.application](command)
-            else:
+            if result is None:
                 # Use generic execution logic
                 result = self._execute_generic_command(command)
             
@@ -258,9 +260,10 @@ class TaskEngine:
             if parsed.action == ActionType.MULTI_STEP:
                 return TaskResult(status=TaskStatus.FAILED, message=f"Step {i} is itself multi-step: {step}")
 
+            result = None
             if parsed.application in self.app_handlers:
                 result = self.app_handlers[parsed.application](parsed)
-            else:
+            if result is None:
                 result = self._execute_generic_command(parsed)
 
             messages.append(f"{i}. {result.message}")

@@ -233,7 +233,7 @@ class NLPProcessor:
                 r'\b(macro|macros|recording|recordings)\b'
             ],
             ApplicationType.WHATSAPP: [
-                r'\bwhats\s?app\b'
+                r'\bwh?ats?\s?app\b'
             ]
         }
     

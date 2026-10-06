@@ -36,7 +36,7 @@ from ...core.nlp_processor import ParsedCommand, ActionType
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONTACTS_FILE = PROJECT_ROOT / "data" / "whatsapp_contacts.json"
 
-_WA = r"whats\s?app"
+_WA = r"wh?ats?\s?app"  # also "WatsApp" / "Whatsap" spellings from speech recognition
 _FILLER_PREFIX = r"^(?:(?:hey\s+)?jarvis[,\s]+|please\s+|can you\s+|could you\s+)+"
 
 
@@ -128,7 +128,11 @@ class WhatsAppHandler:
         self.contacts = self._load_contacts()
 
     # ------------------------------------------------------------------ public API
-    def handle_command(self, command: ParsedCommand) -> TaskResult:
+    def handle_command(self, command: ParsedCommand) -> Optional[TaskResult]:
+        """Handle open/send. Returns None for anything else (close, minimize, scroll...)
+        so the task engine runs its generic action on the WhatsApp window instead."""
+        if command.action not in (ActionType.OPEN, ActionType.SEND, ActionType.CREATE, ActionType.NAVIGATE):
+            return None
         params = command.parameters or {}
         contact = params.get("contact") or command.target
         message = params.get("message")
@@ -293,22 +297,37 @@ class WhatsAppHandler:
     def _whatsapp_window(self):
         if not HAS_PYGETWINDOW:
             return None
-        for w in gw.getWindowsWithTitle(self.WINDOW_TITLE):
-            if w.title.strip() == self.WINDOW_TITLE and w.width > 200:
-                return w
-        return None
+        candidates = [w for w in gw.getWindowsWithTitle(self.WINDOW_TITLE)
+                      if w.title.strip() == self.WINDOW_TITLE and w.width > 200 and w.height > 200
+                      and getattr(w, "visible", True)]
+        if not candidates:
+            return None
+        # WhatsApp can expose more than one top-level window with this title;
+        # prefer the one that's active, then the largest
+        try:
+            active = gw.getActiveWindow()
+            for w in candidates:
+                if active and w._hWnd == active._hWnd:
+                    return w
+        except Exception:
+            pass
+        return max(candidates, key=lambda w: w.width * w.height)
 
     def _is_foreground(self) -> bool:
         try:
             active = gw.getActiveWindow()
-            return bool(active and active.title.strip() == self.WINDOW_TITLE)
+            return bool(active and active.title.strip() == self.WINDOW_TITLE
+                        and active.width > 200 and getattr(active, "visible", True))
         except Exception:
             return False
 
     def _focus_whatsapp(self, timeout: float = 15.0):
         """Bring WhatsApp to the front; the whatsapp: protocol launches or focuses it."""
         if self._is_foreground():
-            return self._whatsapp_window()
+            window = self._whatsapp_window()
+            if window:
+                return window
+            # A leftover invisible WhatsApp window has focus (e.g. right after closing): relaunch
         try:
             os.startfile("whatsapp:")
         except OSError as e:

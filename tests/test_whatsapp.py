@@ -98,3 +98,24 @@ class TestSendFlow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhatsAppVoiceFixes(unittest.TestCase):
+    def test_close_and_minimize_fall_through_to_generic_actions(self):
+        handler = WhatsAppHandler(MagicMock())
+        nlp = NLPProcessor(use_ai=False)
+        for text in ("close WhatsApp", "minimize WhatsApp"):
+            with self.subTest(text=text):
+                self.assertIsNone(handler.handle_command(nlp.parse_command(text)))
+
+    def test_misspelled_whatsapp_from_speech(self):
+        self.assertEqual(parse_whatsapp_request("Send ya I am coming to Mohith on WatsApp"),
+                         {"contact": "Mohith", "message": "ya I am coming"})
+
+    def test_phonetic_corrections(self):
+        from src.core.indian_english_voice_processor import IndianEnglishVoiceProcessor as V
+        fix = V.__new__(V)._apply_phonetic_corrections
+        self.assertEqual(fix("open Whatsap"), "open WhatsApp")
+        self.assertEqual(fix("Go to GetHub.com"), "Go to GitHub.com")
+        self.assertEqual(fix("Sent, yeah I am coming"), "send yeah I am coming")
+        self.assertEqual(fix("what is the time"), "what is the time")
