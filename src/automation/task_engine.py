@@ -175,6 +175,10 @@ class TaskEngine:
             return self._handle_wait_action(command)
         elif command.action == ActionType.MULTI_STEP:
             return self._handle_multi_step_action(command)
+        elif command.action == ActionType.CHAT:
+            return TaskResult(status=TaskStatus.COMPLETED,
+                              message=command.target or "I'm here, Lucky. What should I do?",
+                              data={'reply': True})
         else:
             return TaskResult(
                 status=TaskStatus.FAILED,
@@ -424,6 +428,19 @@ class TaskEngine:
         }
         
         target_lower = command.target.lower()
+
+        # 1. Ask the foreground app for a control with that name (accessibility tree).
+        #    Far more reliable than OCR: "click type a message", "click the text box".
+        if target_lower not in window_controls:
+            from ..core import ui_automation
+            control = ui_automation.find_control(command.target)
+            if control:
+                x, y, w, h = control['rect']
+                label = control['name'] or 'text box'
+                if self.screen_agent.click_element(x + w // 2, y + h // 2):
+                    return TaskResult(status=TaskStatus.COMPLETED, message=f"Clicked '{label}'",
+                                      data={'method': 'ui_automation', 'control': control})
+
         if target_lower in window_controls:
             import os
             template_name = window_controls[target_lower]

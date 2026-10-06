@@ -45,6 +45,7 @@ class ActionType(Enum):
     SHUTDOWN = "shutdown"
     MULTI_STEP = "multi_step"
     ERASE_AND_TYPE = "erase_and_type"
+    CHAT = "chat"  # small talk / questions about the assistant: reply, don't act
     UNKNOWN = "unknown"
 
 class ApplicationType(Enum):
@@ -301,6 +302,25 @@ class NLPProcessor:
         if re.fullmatch(r'(?:press|click|hit|tap|open)\s+(?:the\s+)?(?:windows|win|start)(?:\s+(?:key|button|menu))?|open\s+windows', text):
             return ParsedCommand(ActionType.PRESS, ApplicationType.UNKNOWN, target='win',
                                  confidence=0.95, raw_text=original_text)
+
+        reply = self.small_talk_reply(text)
+        if reply:
+            return ParsedCommand(ActionType.CHAT, ApplicationType.UNKNOWN, target=reply,
+                                 confidence=0.95, raw_text=original_text)
+
+        # Single click / type commands are unambiguous; the AI sometimes split
+        # "click type a message" into two broken steps
+        if not re.search(r'\b(and|then)\b', text):
+            single = re.fullmatch(r'(?:click|tap|select)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+button)?', original_text.strip(), re.IGNORECASE)
+            keys = r'enter|return|escape|esc|tab|space|backspace|delete|win|windows'
+            if single and not re.fullmatch(rf'(?:{keys})(?:\s+key)?', single.group(1), re.IGNORECASE) \
+                    and not re.fullmatch(r'(all|everything)', single.group(1), re.IGNORECASE):
+                return ParsedCommand(ActionType.CLICK, self._detect_application(text), target=single.group(1).strip(),
+                                     confidence=0.9, raw_text=original_text)
+            typed = re.fullmatch(r'(?:type|write)\s+(?:in\s+)?(.+)', original_text.strip(), re.IGNORECASE)
+            if typed and not re.search(r'\bcode\b', typed.group(1), re.IGNORECASE):
+                return ParsedCommand(ActionType.TYPE, ApplicationType.UNKNOWN, target=typed.group(1).strip(),
+                                     confidence=0.9, raw_text=original_text)
 
         # Try AI-powered conversion first if available
         if self.ai_converter and self.ai_converter.is_available():
@@ -627,6 +647,26 @@ class NLPProcessor:
         
         return result
     
+    SMALL_TALK = [
+        (r'(what are you doing|what\'?s going on|what are you up to)', "I'm listening for your next command, Lucky. Tell me what to do."),
+        (r'(how are you|how are you doing|how\'?s it going)', "All systems running smoothly, Lucky. How can I help?"),
+        (r'(who are you|what is your name|what\'?s your name|introduce yourself)', "I'm JARVIS, your desktop assistant. I can open apps, click, type, search and send WhatsApp messages."),
+        (r'(what can you do|help me|what do you do|your features)', "I can open apps and websites, click and type for you, search the web, send WhatsApp messages and play macros."),
+        (r'(thank you|thanks|thank u|good job|well done)', "You're welcome, Lucky."),
+        (r'(hi|hello|hey|good (morning|afternoon|evening))', "Hello, Lucky. What can I do for you?"),
+        (r'(are you there|can you hear me|are you listening)', "Yes, Lucky. I'm here."),
+        (r'(nothing|never ?mind|no(thing)? worries)', "Alright, I'll stand by."),
+    ]
+
+    def small_talk_reply(self, text: str) -> Optional[str]:
+        """Return a reply if `text` is small talk rather than a task, else None."""
+        clean = re.sub(r'[^a-z\' ]', '', text.lower()).strip()
+        clean = re.sub(r'^(hey |ok |so |and )?(jarvis )?', '', clean).strip()
+        for pattern, reply in self.SMALL_TALK:
+            if re.fullmatch(rf'{pattern}( jarvis)?( please)?', clean):
+                return reply
+        return None
+
     def _get_sentiment_analyzer(self):
         """Load the transformers sentiment pipeline on first use."""
         if not self._sentiment_loaded:

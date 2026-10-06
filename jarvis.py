@@ -801,8 +801,16 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
         action_str = parsed.action.value.lower()
         app_str = parsed.application.value.lower()
 
-        # Handle OPEN commands with smart opener
-        if action_str == "open":
+        # Small talk: answer it instead of acting on it
+        if action_str == "chat":
+            reply = parsed.target or "I'm here, Lucky. What should I do?"
+            print(f"[JARVIS] {reply}")
+            voice.speak(reply)
+            return True
+
+        # Handle OPEN commands with smart opener (WhatsApp has its own handler,
+        # which can also bring it back from the system tray)
+        if action_str == "open" and app_str != "whatsapp":
             # Extract app name from command
             app_name = extract_app_name(command_text)
             
@@ -854,11 +862,13 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
                 voice.speak(f"Searching YouTube for {query}, Lucky.")
                 return open_url(url)
-            if intelligent is not None and not engine_hint:
-                action_details = intelligent.handle_search_command(query)
-            else:
-                action_details = {"query": query, "engine": engine_hint or "google", "browser": None}
-            return execute_search_action(action_details, voice)
+            # Search straight away in the default browser; asking "which engine?" and
+            # "which browser?" every time made searches slow and error-prone
+            query = re.sub(r'^(search(\s+for)?|google|look\s+up|find)\s+', '', query, flags=re.IGNORECASE).strip() or query
+            engine_name = engine_hint if engine_hint in ("google", "bing", "duckduckgo") else "google"
+            print(f"[SEARCH] {engine_name}: {query}")
+            voice.speak(f"Searching for {query}, Lucky.")
+            return execute_search_action({"query": query, "engine": engine_name, "browser": None}, voice)
 
         # Execute normally
         result = engine.execute_command(parsed)
@@ -893,7 +903,8 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 return False
         else:
             print(f"[FAILED] Failed: {result.message}")
-            voice.speak("I encountered an error executing that command, Lucky.")
+            # Say why, so the user can rephrase ("Could not find 'xyz' to click")
+            voice.speak(f"Sorry Lucky, {result.message.replace(chr(39), '')}")
             return False
 
     except Exception as e:

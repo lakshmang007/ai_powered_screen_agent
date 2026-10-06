@@ -204,7 +204,7 @@ class WhatsAppHandler:
     def _composer_element(self):
         """The WhatsApp message box via Windows UI Automation, or None."""
         window = self._whatsapp_window()
-        if window is None:
+        if window is None or not isinstance(getattr(window, "_hWnd", None), int):
             return None
         try:
             import comtypes.client
@@ -223,7 +223,9 @@ class WhatsAppHandler:
             self.logger.debug(f"UI Automation unavailable: {e}")
         return None
 
-    def send_message(self, contact: str, message: str) -> TaskResult:
+    def send_message(self, contact: str, message: str, dry_run: bool = False) -> TaskResult:
+        """Send `message` to `contact`. dry_run does everything except pressing Enter,
+        then clears the draft again (used for testing without messaging anyone)."""
         entry = self._lookup(contact)
         display = entry["search"]
 
@@ -242,9 +244,34 @@ class WhatsAppHandler:
         if not self._paste_text(message):
             return TaskResult(TaskStatus.FAILED, "Couldn't type the message")
         time.sleep(0.3)
+
+        # Make sure the text is in this chat's message box before pressing Enter
+        draft = self._composer_text()
+        if draft is not None and message.strip() not in draft:
+            self.screen_agent.key_combination("ctrl", "a")
+            self.screen_agent.press_key("delete")
+            return TaskResult(TaskStatus.FAILED, "The message didn't land in the message box, so I didn't send it")
+
+        if dry_run:
+            self.screen_agent.key_combination("ctrl", "a")
+            self.screen_agent.press_key("delete")
+            return TaskResult(TaskStatus.COMPLETED, f"Dry run: '{message}' was ready to send to {display} (cleared, not sent)",
+                              data={"contact": display, "message": message, "draft_verified": draft is not None})
+
         self.screen_agent.press_key("enter")
         return TaskResult(TaskStatus.COMPLETED, f"Sent '{message}' to {display} on WhatsApp",
                           data={"contact": display, "message": message})
+
+    def _composer_text(self) -> Optional[str]:
+        """Current text in the message box (UI Automation Value), or None if unreadable."""
+        composer = self._composer_element()
+        if composer is None:
+            return None
+        try:
+            value = composer.GetCurrentPropertyValue(30045)  # UIA_ValueValuePropertyId
+            return value if isinstance(value, str) else None
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ helpers
     def _load_contacts(self) -> Dict[str, Dict[str, str]]:

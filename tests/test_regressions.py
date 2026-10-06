@@ -158,3 +158,57 @@ class TestSmartOpenerMatching(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestConversationAndClicks(unittest.TestCase):
+    """Fixes from the 2026-10-06 JARVIS session log."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.nlp = NLPProcessor(use_ai=False)
+
+    def test_small_talk_is_answered_not_searched(self):
+        for text in ("what are you doing", "how are you jarvis", "thank you"):
+            with self.subTest(text=text):
+                cmd = self.nlp.parse_command(text)
+                self.assertEqual(cmd.action, ActionType.CHAT)
+                self.assertTrue(cmd.target)
+        self.assertNotEqual(self.nlp.parse_command("what is the weather in delhi").action, ActionType.CHAT)
+
+    def test_click_is_one_action(self):
+        cmd = self.nlp.parse_command("click type a message")
+        self.assertEqual((cmd.action, cmd.target), (ActionType.CLICK, "type a message"))
+        self.assertEqual(self.nlp.parse_command("click the text container").target, "text container")
+        self.assertEqual(self.nlp.parse_command("click enter").action, ActionType.PRESS)
+
+    def test_type_keeps_case(self):
+        cmd = self.nlp.parse_command("type Hello World")
+        self.assertEqual((cmd.action, cmd.target), (ActionType.TYPE, "Hello World"))
+
+
+class TestUIAutomationMatching(unittest.TestCase):
+    from src.core import ui_automation as ua
+
+    CONTROLS = [
+        {"name": "Chats", "type": 50000, "rect": (12, 48, 40, 40), "focused": False},
+        {"name": "", "type": 50004, "rect": (133, 114, 239, 21), "focused": False},
+        {"name": "Type a message to Mohith", "type": 50004, "rect": (548, 1030, 1309, 24), "focused": False},
+        {"name": "WhatsApp", "type": 50030, "rect": (0, 0, 1920, 1080), "focused": False},
+        {"name": "Send", "type": 50000, "rect": (1860, 1030, 30, 30), "focused": False},
+    ]
+
+    def match(self, query):
+        m = self.ua.best_match(query, self.CONTROLS)
+        return m and (m["name"], m["rect"])
+
+    def test_named_controls(self):
+        self.assertEqual(self.match("type a message")[0], "Type a message to Mohith")
+        self.assertEqual(self.match("the send button")[0], "Send")
+        self.assertEqual(self.match("chats")[0], "Chats")
+
+    def test_generic_text_box_means_message_box(self):
+        self.assertEqual(self.match("the text container")[0], "Type a message to Mohith")
+        self.assertEqual(self.match("search box")[1], (133, 114, 239, 21))
+
+    def test_no_match(self):
+        self.assertIsNone(self.match("purple elephant"))

@@ -194,14 +194,21 @@ class AICommandConverter:
         return f"""You are a command parser for a Windows automation assistant.
 Convert the following natural language command into a structured JSON format.
 
-Available Actions: open, click, type, press, search, navigate, send, post, create, close, scroll, wait, erase, clear, select, delete, minimize, multi_step, erase_and_type
-Available Applications: vscode, gmail, linkedin, chrome, firefox, notepad, explorer, terminal, macro, unknown
+Available Actions: open, click, type, press, search, navigate, send, post, create, close, scroll, wait, erase, clear, select, delete, minimize, multi_step, erase_and_type, chat
+Available Applications: vscode, gmail, linkedin, chrome, firefox, notepad, explorer, terminal, macro, whatsapp, unknown
 
 Rules:
 - "target" keeps the user's original casing (file names, text to type).
 - For "press", target is the key name (enter, escape, tab, win, ...).
+- For "click", target is the visible label of the thing to click (e.g. "type a message", "Send").
+  "click X" is ONE click action, never multi_step.
 - For "navigate", target is the URL or site name.
-- Use "multi_step" when the command has several actions; put each simple step in parameters.steps.
+- For "search", target is ONLY the search query, without words like "search for".
+- Use "multi_step" only when the command has several actions; put each simple step in parameters.steps,
+  and every step must be a complete command (e.g. "click Send", never just "click").
+- Use "chat" for greetings, small talk or questions about the assistant itself
+  ("what are you doing", "how are you"); put a short friendly reply (max 2 sentences) in target.
+  Questions about the world ("what is the weather") are "search".
 
 Command: "{command}"
 
