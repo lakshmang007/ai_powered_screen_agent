@@ -27,7 +27,13 @@ except ImportError:
 
 class SmartAppOpener:
     """Smart application opener with taskbar checking."""
-    
+
+    SYSTEM_WINDOW_TITLES = {
+        'Windows Input Experience', 'Program Manager', 'Microsoft Text Input Application',
+        'Windows Shell Experience Host', 'Start', 'Search', 'Task Switching', 'Task View',
+        'NVIDIA GeForce Overlay', 'Default IME', 'MSCTFIME UI',
+    }
+
     def __init__(self, voice_processor=None, system_search_handler=None):
         """
         Initialize smart app opener.
@@ -219,7 +225,9 @@ class SmartAppOpener:
             
             # Check each window
             for window_title in all_windows:
-                if not window_title.strip():
+                # Skip blank titles and invisible shell/system windows that would
+                # otherwise "match" (e.g. 'open windows' -> Windows Input Experience)
+                if not window_title.strip() or window_title.strip() in self.SYSTEM_WINDOW_TITLES:
                     continue
                 
                 window_title_lower = window_title.lower()

@@ -177,15 +177,21 @@ Examples:
     
     return parser.parse_args()
 
-def register_default_handlers(task_engine, screen_agent):
-    """Register the application-specific handlers on a task engine."""
+def register_default_handlers(task_engine, screen_agent, whatsapp_confirm=None):
+    """Register the application-specific handlers on a task engine.
+
+    whatsapp_confirm: optional fn(contact, message) -> bool asked before sending.
+    """
     from src.automation.handlers import VSCodeHandler, GmailHandler, LinkedInHandler, BrowserHandler
+    from src.automation.handlers.whatsapp_handler import WhatsAppHandler
     from src.core.nlp_processor import ApplicationType
 
     task_engine.register_app_handler(ApplicationType.VSCODE, VSCodeHandler(screen_agent).handle_command)
     task_engine.register_app_handler(ApplicationType.GMAIL, GmailHandler(screen_agent).handle_command)
     task_engine.register_app_handler(ApplicationType.LINKEDIN, LinkedInHandler(screen_agent).handle_command)
     task_engine.register_app_handler(ApplicationType.CHROME, BrowserHandler(screen_agent).handle_command)
+    task_engine.register_app_handler(
+        ApplicationType.WHATSAPP, WhatsAppHandler(screen_agent, confirm_callback=whatsapp_confirm).handle_command)
 
 
 def run_gui_mode(config):
@@ -267,7 +273,7 @@ def run_cli_mode(config):
                     print(f"✨ High confidence: {parsed_command.confidence:.0%}")
 
                 # Handle OPEN commands with smart opener
-                if parsed_command.action.value.lower() == "open" and smart_opener:
+                if parsed_command.action.value.lower() == "open" and smart_opener and parsed_command.application.value != "whatsapp":
                     app_name = parsed_command.target or parsed_command.application.value
                     if app_name and app_name.lower() != "unknown":
                         print(f"🔍 Smart opening: {app_name}")
@@ -408,7 +414,8 @@ def run_voice_mode(config):
         # Initialize screen agent and task engine
         screen_agent = ScreenAgent()
         engine = TaskEngine(screen_agent)
-        register_default_handlers(engine, screen_agent)
+        from jarvis import make_voice_confirm
+        register_default_handlers(engine, screen_agent, whatsapp_confirm=make_voice_confirm(voice))
         print("✅ Task engine initialized")
 
         # Shared interrupt signal (overlay STOP button -> long-running handlers)

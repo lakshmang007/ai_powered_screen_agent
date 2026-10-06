@@ -35,6 +35,22 @@ MACRO_DIR = Path(__file__).resolve().parent / "macros"
 BROWSER_COMMANDS = {"chrome": "chrome", "firefox": "firefox", "edge": "msedge", "msedge": "msedge"}
 
 
+def make_voice_confirm(voice):
+    """Build a WhatsApp send-confirmation callback that asks out loud.
+
+    Speech recognition can mishear names and messages, so a voice-triggered send is
+    read back first. Set WHATSAPP_VOICE_CONFIRM=false in .env to skip this.
+    """
+    def confirm(contact, message):
+        if os.getenv("WHATSAPP_VOICE_CONFIRM", "true").strip().lower() in ("false", "0", "no", "off"):
+            return True
+        voice.speak(f"Send {message} to {contact} on WhatsApp? Say yes to confirm.", async_speech=False)
+        answer = listen_for_input(voice, timeout=10)
+        print(f"[WHATSAPP] Confirmation answer: {answer}")
+        return bool(answer) and is_positive_response(answer) and not is_negative_response(answer)
+    return confirm
+
+
 def open_url(url, browser=None):
     """Open a URL in a specific browser (chrome/firefox/edge) or the default one.
 
@@ -276,6 +292,10 @@ def main():
         engine.register_app_handler(ApplicationType.GMAIL, gmail_handler.handle_command)
         engine.register_app_handler(ApplicationType.LINKEDIN, linkedin_handler.handle_command)
         engine.register_app_handler(ApplicationType.CHROME, browser_handler.handle_command)
+
+        from src.automation.handlers.whatsapp_handler import WhatsAppHandler
+        whatsapp_handler = WhatsAppHandler(screen_agent, confirm_callback=make_voice_confirm(voice))
+        engine.register_app_handler(ApplicationType.WHATSAPP, whatsapp_handler.handle_command)
         
         print("✅ JARVIS is online!\n")
         
@@ -536,6 +556,23 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 print(f"[ERROR] Shutdown failed: {e}")
                 voice.speak("I encountered an error initiating shutdown, Lucky.")
                 return False
+
+        # 1b. WhatsApp: "send yeah I'm coming to Mohith on WhatsApp",
+        #     "open whatsapp, go to mohith chat and type and send ..."
+        #     Must run before multi-step splitting and the smart opener.
+        from src.automation.handlers.whatsapp_handler import parse_whatsapp_request
+        if parse_whatsapp_request(command_text):
+            parsed = nlp.parse_command(command_text)
+            print(f"[WHATSAPP] {parsed.action.value}: contact={parsed.parameters.get('contact')!r} "
+                  f"message={parsed.parameters.get('message')!r}")
+            result = engine.execute_command(parsed)
+            print(f"[WHATSAPP] {result.status.value}: {result.message}")
+            if result.status.value == 'completed':
+                voice.speak(result.message.replace("'", ""))
+                context.add_action('whatsapp', parsed.parameters)
+                return True
+            voice.speak(result.message.replace("'", "") if result.status.value != 'cancelled' else "Okay, I won't send it, Lucky.")
+            return False
 
         # 2. Check for INSTALL command ("install spotify", "please install vlc")
         install_match = re.match(r'^(?:please\s+|can you\s+|could you\s+)?install\s+(.+)$', cmd_lower)

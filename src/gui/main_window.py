@@ -121,6 +121,19 @@ class MainWindow:
         self.task_engine.register_app_handler(ApplicationType.CHROME, browser_handler.handle_command)
         self.task_engine.register_app_handler(ApplicationType.MACRO, self._handle_macro_command)
 
+        from ..automation.handlers.whatsapp_handler import WhatsAppHandler
+        whatsapp_handler = WhatsAppHandler(self.screen_agent, confirm_callback=self._confirm_whatsapp_send)
+        self.task_engine.register_app_handler(ApplicationType.WHATSAPP, whatsapp_handler.handle_command)
+
+    def _confirm_whatsapp_send(self, contact: str, message: str) -> bool:
+        """Typed commands are sent as written; spoken ones (JARVIS mode) are read back first."""
+        if not getattr(self, 'byte_smart_mode', False):
+            return True
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        from jarvis import make_voice_confirm
+        return make_voice_confirm(self.voice_processor)(contact, message)
+
     def _handle_macro_command(self, command: ParsedCommand) -> TaskResult:
         """Handle macro-related commands."""
         from ..core.nlp_processor import ActionType
@@ -484,7 +497,8 @@ class MainWindow:
 
             # Handle OPEN commands with Smart App Opener
             # Skip MACRO commands so they are handled by the registered handler
-            is_macro = parsed_command.application == ApplicationType.MACRO
+            # MACRO and WHATSAPP go to their registered handlers, not the smart opener
+            is_macro = parsed_command.application in (ApplicationType.MACRO, ApplicationType.WHATSAPP)
             if not is_macro and parsed_command.target:
                  if "macro" in parsed_command.target.lower():
                      is_macro = True
@@ -652,14 +666,12 @@ class MainWindow:
                     # e.g., "Jarvis open notepad" -> cmd_lower="jarvis open notepad"
                     # We need to strip the wake word and see if anything remains
                     
-                    # Get the wake word used
-                    wake_words = ['jarvis', 'hello jarvis', 'hey jarvis', 'hi jarvis']
-                    used_wake_word = next((w for w in wake_words if cmd_lower.startswith(w)), None)
-                    
-                    remaining_command = ""
-                    if used_wake_word:
-                        remaining_command = cmd_lower[len(used_wake_word):].strip()
-                    
+                    # Strip the wake word wherever it was said ("jarvis open x",
+                    # "open x jarvis"), keeping the original casing for messages
+                    import re
+                    remaining_command = re.sub(r'\b(?:hello|hey|hi|ok)?\s*(?:jarvis|jarves|jar vis)\b[\s,.!?]*',
+                                               ' ', command, flags=re.IGNORECASE).strip(" ,.!?")
+
                     if remaining_command:
                         # User said "Jarvis [command]", so execute immediately
                         command = remaining_command

@@ -58,6 +58,7 @@ class ApplicationType(Enum):
     EXPLORER = "explorer"
     TERMINAL = "terminal"
     MACRO = "macro"
+    WHATSAPP = "whatsapp"
     UNKNOWN = "unknown"
 
 @dataclass
@@ -229,6 +230,9 @@ class NLPProcessor:
             ],
             ApplicationType.MACRO: [
                 r'\b(macro|macros|recording|recordings)\b'
+            ],
+            ApplicationType.WHATSAPP: [
+                r'\bwhats\s?app\b'
             ]
         }
     
@@ -276,8 +280,27 @@ class NLPProcessor:
         Returns:
             ParsedCommand object with parsed information
         """
+        # Drop the wake word wherever speech recognition put it ("click windows button jarvis")
+        text = re.sub(r'^\s*(?:hey\s+|ok\s+)?jarvis\b[\s,.!?]*', '', text or '', flags=re.IGNORECASE)
+        text = re.sub(r'[\s,]*\bjarvis[\s.!?]*$', '', text, flags=re.IGNORECASE)
         original_text = text
         text = text.lower().strip()
+
+        # Deterministic fast paths that must not be split into steps or re-interpreted by the AI
+        from src.automation.handlers.whatsapp_handler import parse_whatsapp_request
+        whatsapp = parse_whatsapp_request(original_text)
+        if whatsapp:
+            return ParsedCommand(
+                action=ActionType.SEND if whatsapp['message'] else ActionType.OPEN,
+                application=ApplicationType.WHATSAPP,
+                target=whatsapp['contact'],
+                parameters=dict(whatsapp),
+                confidence=0.95,
+                raw_text=original_text
+            )
+        if re.fullmatch(r'(?:press|click|hit|tap|open)\s+(?:the\s+)?(?:windows|win|start)(?:\s+(?:key|button|menu))?|open\s+windows', text):
+            return ParsedCommand(ActionType.PRESS, ApplicationType.UNKNOWN, target='win',
+                                 confidence=0.95, raw_text=original_text)
 
         # Try AI-powered conversion first if available
         if self.ai_converter and self.ai_converter.is_available():
