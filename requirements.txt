@@ -7,24 +7,35 @@ pynput>=1.7.0
 
 # Screen capture and image processing
 mss>=9.0.0
-pytesseract>=0.3.10
+pytesseract>=0.3.10   # also needs the Tesseract OCR binary (see INSTALL_TESSERACT.md)
 
 # Voice processing
 speechrecognition>=3.10.0
+pyaudio>=0.2.13       # microphone access for speechrecognition
 pyttsx3>=2.90
 
 # Natural Language Processing
-spacy>=3.6.0
+spacy>=3.6.0          # then: python -m spacy download en_core_web_sm
 nltk>=3.8.0
+
+# AI command parsing (pick one provider in .env; all are optional)
+google-genai>=1.0.0   # Gemini (GEMINI_API_KEY)
+groq>=0.9.0           # Groq (GROQ_API_KEY)
+openai>=1.0.0         # Whisper / prompt enhancement (OPENAI_API_KEY)
 
 # Web automation
 selenium>=4.11.0
 webdriver-manager>=4.0.0
+pywhatkit>=5.4
 
 # Utilities
 python-dotenv>=1.0.0
 requests>=2.31.0
 
-# Application automation
+# Application automation (Windows)
 pygetwindow>=0.0.9
 psutil>=5.9.0
+pywin32>=306; sys_platform == "win32"   # SAPI text-to-speech, COM automation
+
+# Tests
+pytest>=7.0

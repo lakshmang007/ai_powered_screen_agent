@@ -33,7 +33,23 @@ import random
 from pathlib import Path
 
 # Add src directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
+
+# Load API keys (GEMINI_API_KEY / GROQ_API_KEY / ...) from .env before anything reads them.
+# Without this, CLI and GUI modes silently ran without AI.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
+except ImportError:
+    pass
+
+# Windows consoles default to cp1252, which can't print the emoji in our output
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
 
 from src.utils.helpers import setup_logging, load_config
 from src.gui.main_window import MainWindow
@@ -161,6 +177,17 @@ Examples:
     
     return parser.parse_args()
 
+def register_default_handlers(task_engine, screen_agent):
+    """Register the application-specific handlers on a task engine."""
+    from src.automation.handlers import VSCodeHandler, GmailHandler, LinkedInHandler, BrowserHandler
+    from src.core.nlp_processor import ApplicationType
+
+    task_engine.register_app_handler(ApplicationType.VSCODE, VSCodeHandler(screen_agent).handle_command)
+    task_engine.register_app_handler(ApplicationType.GMAIL, GmailHandler(screen_agent).handle_command)
+    task_engine.register_app_handler(ApplicationType.LINKEDIN, LinkedInHandler(screen_agent).handle_command)
+    task_engine.register_app_handler(ApplicationType.CHROME, BrowserHandler(screen_agent).handle_command)
+
+
 def run_gui_mode(config):
     """Run the application in GUI mode."""
     try:
@@ -169,7 +196,7 @@ def run_gui_mode(config):
     except KeyboardInterrupt:
         print("\nApplication interrupted by user")
     except Exception as e:
-        logging.error(f"Error running GUI application: {e}")
+        logging.exception(f"Error running GUI application: {e}")
         sys.exit(1)
 
 def run_cli_mode(config):
@@ -202,18 +229,7 @@ def run_cli_mode(config):
         smart_opener = None
     
     # Setup handlers
-    from src.automation.handlers import VSCodeHandler, GmailHandler, LinkedInHandler, BrowserHandler
-    from src.core.nlp_processor import ApplicationType
-    
-    vscode_handler = VSCodeHandler(screen_agent)
-    gmail_handler = GmailHandler(screen_agent)
-    linkedin_handler = LinkedInHandler(screen_agent)
-    browser_handler = BrowserHandler(screen_agent)
-    
-    task_engine.register_app_handler(ApplicationType.VSCODE, vscode_handler.handle_command)
-    task_engine.register_app_handler(ApplicationType.GMAIL, gmail_handler.handle_command)
-    task_engine.register_app_handler(ApplicationType.LINKEDIN, linkedin_handler.handle_command)
-    task_engine.register_app_handler(ApplicationType.CHROME, browser_handler.handle_command)
+    register_default_handlers(task_engine, screen_agent)
     
     try:
         while True:
@@ -242,6 +258,9 @@ def run_cli_mode(config):
                 parsed_command = nlp_processor.parse_command(user_input)
 
                 print(f"🧠 Understood: {parsed_command.action.value} on {parsed_command.application.value}")
+                if parsed_command.action.value == 'multi_step':
+                    for i, step in enumerate(parsed_command.parameters.get('steps', []), 1):
+                        print(f"   {i}. {step}")
                 if parsed_command.confidence < 0.3:
                     print("⚠️  Warning: Low confidence in command understanding")
                 elif parsed_command.confidence > 0.8:
@@ -254,7 +273,7 @@ def run_cli_mode(config):
                         print(f"🔍 Smart opening: {app_name}")
                         result_dict = smart_opener.open_app_smart(app_name)
 
-                        if result_dict['status'] == 'completed':
+                        if result_dict['status'] in ('completed', 'already_open'):
                             print(f"✅ Success: {result_dict['message']}")
                             continue
                         elif result_dict['status'] == 'cancelled':
@@ -354,7 +373,6 @@ def show_history(task_engine):
     for i, entry in enumerate(history[-10:], 1):
         command = entry['command']
         result = entry['result']
-        import time
         timestamp = time.strftime('%H:%M:%S', time.localtime(entry['timestamp']))
         
         status_icon = "✅" if result.status.value == 'completed' else "❌"
@@ -390,19 +408,24 @@ def run_voice_mode(config):
         # Initialize screen agent and task engine
         screen_agent = ScreenAgent()
         engine = TaskEngine(screen_agent)
+        register_default_handlers(engine, screen_agent)
         print("✅ Task engine initialized")
+
+        # Shared interrupt signal (overlay STOP button -> long-running handlers)
+        import threading
+        interrupt_event = threading.Event()
 
         # Initialize smart opener
         smart_opener = None
         if HAS_SMART_OPENER:
-            system_search = SystemSearchHandler(voice)
+            system_search = SystemSearchHandler(voice, interrupt_event=interrupt_event)
             smart_opener = SmartAppOpener(voice_processor=voice, system_search_handler=system_search)
             print("✅ Smart App Opener initialized")
 
-        # Initialize intelligent assistant
+        # Initialize intelligent assistant (takes the NLP processor, not the screen agent)
         intelligent = None
         if HAS_INTELLIGENT:
-            intelligent = IntelligentAssistant(voice, screen_agent)
+            intelligent = IntelligentAssistant(voice, nlp)
             print("✅ Intelligent Assistant initialized")
 
         print("\n" + "=" * 70)
@@ -416,32 +439,25 @@ def run_voice_mode(config):
         print("\n🛑 Press Ctrl+C to exit\n")
 
         # Import JARVIS main loop
-        try:
-            from jarvis import run_jarvis, ContextMemory
-        except ImportError:
-            # Fallback if jarvis.py is not found or has errors
-            print("⚠️  Could not import jarvis.py, falling back to internal implementation")
-            from byte_smart import ContextMemory
-            # We would need to define run_jarvis here or fail, but since we created jarvis.py it should work.
-            raise
+        from jarvis import run_jarvis, ContextMemory
 
         # Create context memory
         context = ContextMemory()
 
         # Run the main loop
-        run_jarvis(voice, nlp, engine, intelligent, context, smart_opener)
+        run_jarvis(voice, nlp, engine, intelligent, context, smart_opener, interrupt_event)
 
     except KeyboardInterrupt:
         print("\n\n👋 Goodbye! Thanks for using JARVIS!")
     except Exception as e:
         print(f"❌ Error in voice mode: {e}")
-        logging.error(f"Voice mode error: {e}")
+        logging.exception(f"Voice mode error: {e}")
     finally:
         print("🧹 Cleaning up...")
         try:
             if 'voice' in locals():
-                voice.stop_continuous_listening()
-        except:
+                voice.cleanup()
+        except Exception:
             pass
 
 def main():
@@ -451,7 +467,8 @@ def main():
     
     # Load configuration
     try:
-        config = load_config(args.config)
+        config_path = args.config if os.path.isabs(args.config) else os.path.join(PROJECT_ROOT, args.config)
+        config = load_config(config_path)
     except Exception as e:
         print(f"Error loading configuration: {e}")
         config = {}

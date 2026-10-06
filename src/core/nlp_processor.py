@@ -43,6 +43,8 @@ class ActionType(Enum):
     MINIMIZE = "minimize"
     PLAY = "play"
     SHUTDOWN = "shutdown"
+    MULTI_STEP = "multi_step"
+    ERASE_AND_TYPE = "erase_and_type"
     UNKNOWN = "unknown"
 
 class ApplicationType(Enum):
@@ -68,8 +70,20 @@ class ParsedCommand:
     confidence: float = 0.0
     raw_text: str = ""
 
+    def __post_init__(self):
+        if self.parameters is None:
+            self.parameters = {}
+
 class NLPProcessor:
     """Natural Language Processing for command understanding."""
+
+    # Application names the AI may return that map onto our enum
+    AI_APP_ALIASES = {
+        'vs code': 'vscode', 'visual studio code': 'vscode', 'code': 'vscode',
+        'google chrome': 'chrome', 'browser': 'chrome',
+        'file explorer': 'explorer', 'cmd': 'terminal', 'powershell': 'terminal',
+        'command prompt': 'terminal', 'windows': 'unknown',
+    }
     
     def __init__(self, use_ai: bool = True):
         """Initialize the NLP processor.
@@ -90,15 +104,9 @@ class NLPProcessor:
             self.logger.warning("spaCy not installed. Using basic NLP only.")
             self.nlp = None
 
-        # Initialize sentiment analysis pipeline
-        if HAS_TRANSFORMERS:
-            try:
-                self.sentiment_analyzer = pipeline("sentiment-analysis")
-            except Exception as e:
-                self.logger.warning(f"Could not load sentiment analyzer: {e}")
-                self.sentiment_analyzer = None
-        else:
-            self.sentiment_analyzer = None
+        # Sentiment analysis pipeline is loaded lazily (see _get_sentiment_analyzer)
+        self._sentiment_analyzer = None
+        self._sentiment_loaded = False
 
         # Initialize AI command converter
         self.ai_converter = None
@@ -127,92 +135,67 @@ class NLPProcessor:
             ActionType.SHUTDOWN: [
                 r'\b(shutdown|shut\s+down)\s+(the\s+)?(system|computer|pc|machine)\b',
                 r'\b(shutdown|shut\s+down)\s+my\s+(system|computer|pc|machine)\b',
-                r'\bshutdown\s+the\s+system\b',
-                r'\bshut\s+down\s+computer\b',
                 r'\bpower\s+off\b',
-                r'\bshutdown\b',  # Just "shutdown" alone
-                r'\bshut\s+down\b',  # Just "shut down" alone
+                r'^\s*(shutdown|shut\s+down)\s*$',  # Only the bare phrase
             ],
-            ActionType.CLICK: [
-                r'\b(click|tap|select)\b',
-                r'\bclick on\b',
-                r'\bpress the\b'
-            ],
-            ActionType.TYPE: [
-                r'\b(type|write|input)\b',
-                r'\btype in\b',
-                r'\bwrite down\b'
-            ],
-            ActionType.OPEN: [
-                r'\b(open|launch|start|run)\b',
-                r'\bopen up\b',
-                r'\bstart up\b'
-            ],
-            ActionType.CREATE: [
-                r'\b(create|make|new|add)\b',
-                r'\bcreate a\b',
-                r'\bmake a new\b'
-            ],
-            ActionType.SEND: [
-                r'\b(send|email|mail|reply)\b',
-                r'\bsend to\b',
-                r'\breply to\b'
-            ],
-            ActionType.POST: [
-                r'\b(post|share|upload|publish)\b',
-                r'\bpost to\b',
-                r'\bshare on\b'
-            ],
-            ActionType.NAVIGATE: [
-                r'\b(go to|navigate|visit|browse)\b',
-                r'\bgo to\b',
-                r'\bnavigate to\b'
-            ],
-            ActionType.SEARCH: [
-                r'\b(search|find|look for)\b',
-                r'\bsearch for\b',
-                r'\blook up\b'
-            ],
-            ActionType.CLOSE: [
-                r'\b(close|exit|quit)\b',
-                r'\bclose the\b',
-                r'\bclose\s+all\s+(apps|applications)\b'
-            ],
-            ActionType.SCROLL: [
-                r'\b(scroll|move|slide)\b',
-                r'\bscroll down\b',
-                r'\bscroll up\b'
-            ],
+            # Specific editing actions must be checked before CLICK/TYPE,
+            # otherwise "select all" became CLICK and "erase that and type x" became TYPE
             ActionType.ERASE: [
                 r'\b(erase|remove|clear|delete)\s+(that|it|this|what|text)\b',
                 r'\berase\b',
-                r'\bremove that\b',
-                r'\bclear that\b'
+            ],
+            ActionType.SELECT: [
+                r'\bselect\s+(all|everything|text)\b',
+                r'\bhighlight\s+all\b'
+            ],
+            ActionType.DELETE: [
+                r'\bdelete\s+(all|everything)\b',
             ],
             ActionType.CLEAR: [
                 r'\bclear\s+(all|everything|screen)\b',
                 r'\bclear the\b'
             ],
-            ActionType.SELECT: [
-                r'\bselect\s+(all|everything|text)\b',
-                r'\bselect all\b',
-                r'\bhighlight all\b'
-            ],
-            ActionType.DELETE: [
-                r'\bdelete\s+(all|everything|text)\b',
-                r'\bdelete all\b'
-            ],
             ActionType.MINIMIZE: [
                 r'\b(minimize|minimise|hide)\b',
-                r'\bminimize all\b',
-                r'\bminimise all\b',
-                r'\bhide all\b'
             ],
             ActionType.PLAY: [
                 r'\b(play|run|execute)\s+(macro|recording)\b',
                 r'\bplay\s+\w+',
-                r'\brun\s+\w+'
-            ]
+            ],
+            ActionType.NAVIGATE: [
+                r'\b(go to|navigate to|navigate|visit|browse to)\b',
+            ],
+            ActionType.CLICK: [
+                r'\b(click|tap|select)\b',
+                r'\bpress the\b'
+            ],
+            ActionType.TYPE: [
+                r'\b(type|write|input)\b',
+            ],
+            ActionType.OPEN: [
+                r'\b(open|launch|start|run)\b',
+            ],
+            ActionType.CREATE: [
+                r'\b(create|make|new|add)\b',
+            ],
+            ActionType.SEND: [
+                r'\b(send|email|mail|reply)\b',
+            ],
+            ActionType.POST: [
+                r'\b(post|share|upload|publish)\b',
+            ],
+            ActionType.SEARCH: [
+                r'\b(search|find|look for|look up)\b',
+            ],
+            ActionType.CLOSE: [
+                r'\b(close|exit|quit)\b',
+            ],
+            ActionType.SCROLL: [
+                r'\b(scroll)\b',
+            ],
+            ActionType.WAIT: [
+                r'\b(wait|pause)\b',
+            ],
         }
         
         # Define application patterns
@@ -260,22 +243,23 @@ class NLPProcessor:
             List of individual command strings
         """
         # Split by common connectors
-        # Handle "and then", "then", "and" as separators
-        text = text.lower().strip()
+        # Handle "and then", "then", "and" as separators.
+        # Case is preserved so typed text keeps its capitalisation.
+        text = text.strip()
 
         # Handle "open it" or "launch it" after typing - convert to "press enter"
-        if re.search(r'type\s+.+?\s+(?:and\s+)?(?:open|launch)\s+it', text):
-            text = re.sub(r'(?:and\s+)?(?:open|launch)\s+it', 'and press enter', text)
+        if re.search(r'\btype\s+.+?\s+(?:and\s+)?(?:open|launch)\s+it\b', text, re.IGNORECASE):
+            text = re.sub(r'(?:and\s+)?(?:open|launch)\s+it\b', 'and press enter', text, flags=re.IGNORECASE)
 
         # Replace "and then" with a marker
-        text = re.sub(r'\s+and\s+then\s+', ' |STEP| ', text)
+        text = re.sub(r'\s+and\s+then\s+', ' |STEP| ', text, flags=re.IGNORECASE)
         # Replace "then" with a marker
-        text = re.sub(r'\s+then\s+', ' |STEP| ', text)
+        text = re.sub(r'\s+then\s+', ' |STEP| ', text, flags=re.IGNORECASE)
         # Replace "and" with a marker (but be careful with "and" in search queries)
         # Only split on "and" if it's followed by an action word
-        action_words = ['open', 'click', 'type', 'press', 'search', 'close', 'send', 'navigate']
+        action_words = ['open', 'click', 'type', 'press', 'search', 'close', 'send', 'navigate', 'go to', 'scroll', 'wait', 'minimize']
         for action in action_words:
-            text = re.sub(rf'\s+and\s+({action})', r' |STEP| \1', text)
+            text = re.sub(rf'\s+and\s+({action})\b', r' |STEP| \1', text, flags=re.IGNORECASE)
 
         # Split by the marker
         steps = [step.strip() for step in text.split('|STEP|') if step.strip()]
@@ -308,31 +292,58 @@ class NLPProcessor:
                     except ValueError:
                         action_type = ActionType.UNKNOWN
 
+                    app_name = ai_result.application.lower()
+                    app_name = self.AI_APP_ALIASES.get(app_name, app_name)
                     try:
-                        app_type = ApplicationType(ai_result.application.lower())
+                        app_type = ApplicationType(app_name)
                     except ValueError:
                         app_type = ApplicationType.UNKNOWN
 
-                    return ParsedCommand(
-                        action=action_type,
-                        application=app_type,
-                        target=ai_result.target,
-                        parameters=ai_result.parameters,
-                        confidence=ai_result.confidence,
-                        raw_text=original_text
-                    )
+                    parameters = dict(ai_result.parameters or {})
+                    if action_type == ActionType.MULTI_STEP and not parameters.get('steps'):
+                        parameters['steps'] = self.split_multi_step_command(original_text)
+
+                    # Keep the regex-only flags the rest of the app relies on
+                    if re.search(r'\b(using|in|with|via)\s+windows\b', text):
+                        parameters['force_windows_search'] = True
+
+                    if action_type != ActionType.UNKNOWN:
+                        cmd = ParsedCommand(
+                            action=action_type,
+                            application=app_type,
+                            target=ai_result.target or None,
+                            parameters=parameters,
+                            confidence=ai_result.confidence,
+                            raw_text=original_text
+                        )
+                        if re.search(r'\b(macro|macros|recording)\b', text):
+                            cmd.application = ApplicationType.MACRO
+                        return cmd
             except Exception as e:
                 self.logger.debug(f"AI conversion failed, falling back to regex: {e}")
 
         # Fallback to regex-based parsing
+        # "open notepad and type hello" -> one MULTI_STEP command the engine runs in order
+        steps = self.split_multi_step_command(original_text)
+        if len(steps) > 1:
+            return ParsedCommand(
+                action=ActionType.MULTI_STEP,
+                application=self._detect_application(text),
+                target=None,
+                parameters={'steps': steps},
+                confidence=0.8,
+                raw_text=original_text
+            )
+
         # Detect action
         action = self._detect_action(text)
 
         # Detect application
         application = self._detect_application(text)
 
-        # Extract target and parameters
-        target, parameters = self._extract_target_and_parameters(text, action, application)
+        # Extract target and parameters from the original text so the user's casing
+        # survives (folder names, text to type, ...)
+        target, parameters = self._extract_target_and_parameters(original_text.strip(), action, application)
 
         # Calculate confidence
         confidence = self._calculate_confidence(text, action, application, target)
@@ -343,7 +354,7 @@ class NLPProcessor:
             target=target,
             parameters=parameters,
             confidence=confidence,
-            raw_text=text
+            raw_text=original_text
         )
         
         # Force MACRO application if keyword is present
@@ -386,19 +397,30 @@ class NLPProcessor:
             if not target:
                 target = email_matches[0]
         
-        # Extract file/folder names
-        
+        # Extract file/folder names: "create a folder named auto_work"
+        if action == ActionType.CREATE and not target:
+            name_match = re.search(r'\b(?:named|called)\s+(\S+)', text, re.IGNORECASE)
+            if name_match:
+                target = name_match.group(1).strip('"\'.,')
+            item_match = re.search(r'\b(folder|directory|file)\b', text, re.IGNORECASE)
+            if item_match:
+                parameters['type'] = item_match.group(1).lower()
+
+        # Posts that mention media
+        if action == ActionType.POST and re.search(r'\b(image|photo|picture|pic|screenshot)\b', text, re.IGNORECASE):
+            parameters['has_image'] = True
+
         # Extract text to type
         if action == ActionType.TYPE and not target:
             # Look for text after "type"
-            type_match = re.search(r'\b(?:type|write|input)\s+(.+)', text)
+            type_match = re.search(r'\b(?:type|write|input)\s+(.+)', text, re.IGNORECASE)
             if type_match:
                 target = type_match.group(1).strip()
 
         # Extract app for OPEN action
         if action == ActionType.OPEN and not target:
             # Look for text after "open", "launch", "start"
-            open_match = re.search(r'\b(?:open|launch|start|run)\s+(.+)', text)
+            open_match = re.search(r'\b(?:open|launch|start|run)\s+(.+)', text, re.IGNORECASE)
             if open_match:
                 potential_target = open_match.group(1).strip()
                 # Filter out "it", "that"
@@ -408,7 +430,7 @@ class NLPProcessor:
         # Extract target for CLOSE action
         if action == ActionType.CLOSE and not target:
             # Look for text after "close", "exit", "quit"
-            close_match = re.search(r'\b(?:close|exit|quit)\s+(.+)', text)
+            close_match = re.search(r'\b(?:close|exit|quit)\s+(.+)', text, re.IGNORECASE)
             if close_match:
                 potential_target = close_match.group(1).strip()
                 # Filter out "it", "that", "window"
@@ -418,23 +440,57 @@ class NLPProcessor:
         # Extract key to press
         if action == ActionType.PRESS and not target:
             # Look for key name after "press", "hit", "click"
-            press_match = re.search(r'\b(?:press|hit|click)\s+(\w+)', text)
+            if re.search(r'\b(windows|win)\s+key\b', text, re.IGNORECASE):
+                target = 'win'
+            else:
+                press_match = re.search(r'\b(?:press|hit|click)\s+(?:the\s+)?(\w+)', text, re.IGNORECASE)
+                if press_match:
+                    target = press_match.group(1).lower()
+
+        if action == ActionType.NAVIGATE and not target:
+            nav_match = re.search(r'\b(?:go to|navigate to|navigate|visit|browse to)\s+(.+)', text, re.IGNORECASE)
+            if nav_match:
+                target = re.sub(r'\s+(?:website|site|page)$', '', nav_match.group(1).strip(), flags=re.IGNORECASE)
+
+        if action == ActionType.SEARCH and not target:
+            search_match = re.search(r'\b(?:search\s+for|search|look\s+for|look\s+up|find)\s+(.+)', text, re.IGNORECASE)
+            if search_match:
+                query = search_match.group(1).strip()
+                # "search for cats on youtube" -> query "cats", engine hint "youtube"
+                engine_match = re.search(r'\s+(?:on|in|using)\s+(google|youtube|bing|duckduckgo|chrome|browser)\s*$', query, re.IGNORECASE)
+                if engine_match:
+                    parameters['engine'] = engine_match.group(1).lower()
+                    query = query[:engine_match.start()].strip()
+                target = query
+                parameters['query'] = query
+
+        if action in (ActionType.ERASE, ActionType.CLEAR, ActionType.DELETE):
+            # "erase that and type hello" -> also type afterwards
+            type_after = re.search(r'\band\s+(?:then\s+)?(?:type|write)\s+(.+)', text, re.IGNORECASE)
+            if type_after:
+                parameters['type_after'] = type_after.group(1).strip()
+
+        if action == ActionType.WAIT:
+            wait_match = re.search(r'(\d+(?:\.\d+)?)', text)
+            if wait_match:
+                parameters['seconds'] = float(wait_match.group(1))
+
         if action == ActionType.SCROLL:
-            if 'up' in text:
+            if re.search(r'\bup\b', text, re.IGNORECASE):
                 parameters['direction'] = 'up'
-            elif 'down' in text:
+            elif re.search(r'\bdown\b', text, re.IGNORECASE):
                 parameters['direction'] = 'down'
 
         # Check for forced Windows Search
         # e.g. "open dolby access using windows", "open spotify in windows"
-        windows_search_match = re.search(r'\b(using|in|with|via)\s+windows\b', text)
+        windows_search_match = re.search(r'\b(using|in|with|via)\s+windows\b', text, re.IGNORECASE)
         if windows_search_match:
             parameters['force_windows_search'] = True
             # Remove the phrase from text so subsequent extraction works on clean text
-            text = re.sub(r'\b(using|in|with|via)\s+windows\b', '', text).strip()
+            text = re.sub(r'\b(using|in|with|via)\s+windows\b', '', text, flags=re.IGNORECASE).strip()
             # Also clean target if it was already extracted
             if target:
-                target = re.sub(r'\b(using|in|with|via)\s+windows\b', '', target).strip()
+                target = re.sub(r'\b(using|in|with|via)\s+windows\b', '', target, flags=re.IGNORECASE).strip()
 
         # Use NLP for more sophisticated extraction if available
         if self.nlp:
@@ -449,7 +505,9 @@ class NLPProcessor:
                 parameters['entities'] = entities
             
             # Extract noun phrases as potential targets if no target found
-            if not target:
+            if not target and action not in (ActionType.SCROLL, ActionType.WAIT, ActionType.SHUTDOWN,
+                                              ActionType.ERASE, ActionType.SELECT, ActionType.CLEAR,
+                                              ActionType.DELETE):
                 noun_phrases = [chunk.text for chunk in doc.noun_chunks]
                 if noun_phrases:
                     # Filter out common words
@@ -520,8 +578,9 @@ class NLPProcessor:
                 }
             
             # Analyze sentiment if available
-            if self.sentiment_analyzer:
-                sentiment_result = self.sentiment_analyzer(text)[0]
+            sentiment_analyzer = self._get_sentiment_analyzer()
+            if sentiment_analyzer:
+                sentiment_result = sentiment_analyzer(text)[0]
                 result['sentiment'] = sentiment_result['label'].lower()
                 result['confidence'] = sentiment_result['score']
             
@@ -545,6 +604,17 @@ class NLPProcessor:
         
         return result
     
+    def _get_sentiment_analyzer(self):
+        """Load the transformers sentiment pipeline on first use."""
+        if not self._sentiment_loaded:
+            self._sentiment_loaded = True
+            if HAS_TRANSFORMERS:
+                try:
+                    self._sentiment_analyzer = pipeline("sentiment-analysis")
+                except Exception as e:
+                    self.logger.warning(f"Could not load sentiment analyzer: {e}")
+        return self._sentiment_analyzer
+
     def is_question(self, text: str) -> bool:
         """Check if the text is a question."""
         question_words = ['what', 'how', 'when', 'where', 'why', 'who', 'which', 'can', 'could', 'would', 'should']

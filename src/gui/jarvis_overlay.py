@@ -18,6 +18,7 @@ class JarvisOverlay:
 
         self.on_interrupt = on_interrupt
         self.queue = queue.Queue()
+        self._closed = False
 
         # Status Label
         self.status_var = tk.StringVar(value="Initializing...")
@@ -90,6 +91,8 @@ class JarvisOverlay:
         self.queue.put(("text", text))
 
     def check_queue(self):
+        if self._closed:
+            return
         try:
             while True:
                 msg = self.queue.get_nowait()
@@ -98,12 +101,27 @@ class JarvisOverlay:
                     self.status_label.config(fg=msg[2])
                 elif msg[0] == "text":
                     self.text_var.set(msg[1])
+                elif msg[0] == "close":
+                    self._destroy()
+                    return
         except queue.Empty:
             pass
         self.root.after(100, self.check_queue)
 
     def run(self):
         self.root.mainloop()
-        
+
     def close(self):
-        self.root.destroy()
+        """Close the overlay. Safe to call from any thread: Tk widgets may only be
+        touched from the Tk thread, so the request goes through the queue."""
+        if not self._closed:
+            self.queue.put(("close",))
+
+    def _destroy(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass

@@ -16,7 +16,7 @@ class TestNLPProcessor(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.nlp = NLPProcessor()
+        self.nlp = NLPProcessor(use_ai=False)  # deterministic: no network calls in unit tests
     
     def test_parse_vscode_create_folder(self):
         """Test parsing VSCode folder creation command."""

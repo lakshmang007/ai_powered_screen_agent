@@ -7,7 +7,7 @@ from src.automation.handlers.system_search_handler import SystemSearchHandler
 
 class TestWindowsSearchIntent(unittest.TestCase):
     def setUp(self):
-        self.nlp = NLPProcessor()
+        self.nlp = NLPProcessor(use_ai=False)  # deterministic: no network calls in unit tests
         self.search_handler = SystemSearchHandler()
         self.search_handler._windows_search_with_vision = MagicMock(return_value={
             'status': 'found',

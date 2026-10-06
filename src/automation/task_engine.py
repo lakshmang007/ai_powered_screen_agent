@@ -68,6 +68,9 @@ class TaskEngine:
         self.default_timeout = 30
         self.default_retries = 3
         self.retry_delay = 1.0
+
+        # Lazily-created regex-only parser for multi-step plans
+        self._step_parser = None
     
     def register_app_handler(self, app_type: ApplicationType, handler: Callable):
         """
@@ -159,19 +162,122 @@ class TaskEngine:
             return self._handle_close_action(command)
         elif command.action == ActionType.MINIMIZE:
             return self._handle_minimize_action(command)
+        elif command.action == ActionType.NAVIGATE:
+            return self._handle_navigate_action(command)
+        elif command.action in (ActionType.ERASE, ActionType.CLEAR, ActionType.DELETE):
+            return self._handle_erase_action(command)
+        elif command.action == ActionType.ERASE_AND_TYPE:
+            command.parameters.setdefault('type_after', command.target)
+            return self._handle_erase_action(command)
+        elif command.action == ActionType.SELECT:
+            return self._handle_select_action(command)
+        elif command.action == ActionType.WAIT:
+            return self._handle_wait_action(command)
+        elif command.action == ActionType.MULTI_STEP:
+            return self._handle_multi_step_action(command)
         else:
             return TaskResult(
                 status=TaskStatus.FAILED,
                 message=f"Unsupported action: {command.action.value}"
             )
-    
+
+    def _handle_navigate_action(self, command: ParsedCommand) -> TaskResult:
+        """Open a URL (or a bare site name like 'youtube') in the default browser."""
+        import re
+        import webbrowser
+
+        target = (command.target or '').strip()
+        if not target:
+            return TaskResult(status=TaskStatus.FAILED, message="No website specified")
+
+        url = target
+        if not re.match(r'^[a-z]+://', url, re.IGNORECASE):
+            if ' ' in url:
+                from urllib.parse import quote_plus
+                url = f"https://www.google.com/search?q={quote_plus(url)}"
+            else:
+                if '.' not in url:
+                    url = f"{url}.com"
+                url = f"https://{url}"
+
+        if webbrowser.open(url):
+            return TaskResult(status=TaskStatus.COMPLETED, message=f"Opened {url}", data={'url': url})
+        return TaskResult(status=TaskStatus.FAILED, message=f"Could not open browser for {url}")
+
+    def _handle_erase_action(self, command: ParsedCommand) -> TaskResult:
+        """Select everything in the focused field, delete it, optionally type replacement text."""
+        if not (self.screen_agent.key_combination('ctrl', 'a') and self.screen_agent.press_key('delete')):
+            return TaskResult(status=TaskStatus.FAILED, message="Failed to erase text")
+
+        type_after = command.parameters.get('type_after')
+        if type_after:
+            time.sleep(0.2)
+            if not self.screen_agent.type_text(type_after):
+                return TaskResult(status=TaskStatus.FAILED, message="Erased text but failed to type replacement")
+            return TaskResult(status=TaskStatus.COMPLETED, message=f"Replaced text with: '{type_after}'")
+
+        return TaskResult(status=TaskStatus.COMPLETED, message="Erased text")
+
+    def _handle_select_action(self, command: ParsedCommand) -> TaskResult:
+        """Select all in the focused window."""
+        if self.screen_agent.key_combination('ctrl', 'a'):
+            return TaskResult(status=TaskStatus.COMPLETED, message="Selected all")
+        return TaskResult(status=TaskStatus.FAILED, message="Failed to select all")
+
+    def _handle_wait_action(self, command: ParsedCommand) -> TaskResult:
+        """Pause between steps (capped so a misheard number can't hang the agent)."""
+        import re
+        seconds = command.parameters.get('seconds')
+        if seconds is None:
+            # The AI parser may put the duration in target ("5 seconds") instead
+            match = re.search(r'\d+(?:\.\d+)?', f"{command.target or ''} {command.raw_text or ''}")
+            seconds = float(match.group(0)) if match else 1.0
+        seconds = min(float(seconds), 60.0)
+        time.sleep(seconds)
+        return TaskResult(status=TaskStatus.COMPLETED, message=f"Waited {seconds:g}s")
+
+    def _handle_multi_step_action(self, command: ParsedCommand) -> TaskResult:
+        """Run each step of a multi-step plan (e.g. from the AI parser) in order."""
+        steps = command.parameters.get('steps') or []
+        if not steps:
+            return TaskResult(status=TaskStatus.FAILED, message="Multi-step command had no steps")
+
+        # Steps are short ("press win", "type chatgpt"); the regex parser handles them
+        # reliably and avoids one AI round-trip per step.
+        if self._step_parser is None:
+            from ..core.nlp_processor import NLPProcessor
+            self._step_parser = NLPProcessor(use_ai=False)
+
+        messages = []
+        for i, step in enumerate(steps, 1):
+            parsed = self._step_parser.parse_command(str(step))
+            if parsed.action == ActionType.MULTI_STEP:
+                return TaskResult(status=TaskStatus.FAILED, message=f"Step {i} is itself multi-step: {step}")
+
+            if parsed.application in self.app_handlers:
+                result = self.app_handlers[parsed.application](parsed)
+            else:
+                result = self._execute_generic_command(parsed)
+
+            messages.append(f"{i}. {result.message}")
+            if result.status != TaskStatus.COMPLETED:
+                return TaskResult(
+                    status=TaskStatus.FAILED,
+                    message=f"Step {i}/{len(steps)} failed ({step}): {result.message}",
+                    data={'completed_steps': i - 1}
+                )
+            time.sleep(0.5)
+
+        return TaskResult(status=TaskStatus.COMPLETED, message="; ".join(messages),
+                          data={'completed_steps': len(steps)})
+
     def _handle_open_action(self, command: ParsedCommand) -> TaskResult:
         """Handle open/launch actions."""
         app_name = command.target or command.application.value
-        
+
         try:
             # Try to find if application is already running
-            windows = gw.getWindowsWithTitle(app_name)
+            windows = gw.getWindowsWithTitle(app_name) if HAS_PYGETWINDOW and app_name != 'unknown' else []
             if windows:
                 # Application is running, bring to front
                 windows[0].activate()
@@ -282,68 +388,6 @@ class TaskEngine:
             message="Minimized active window"
         )
 
-    def _handle_close_action(self, command: ParsedCommand) -> TaskResult:
-        """Handle close actions."""
-        target = command.target
-        
-        # If target is not explicitly set but application is known, use application name
-        if not target and command.application != ApplicationType.UNKNOWN:
-            target = command.application.value
-
-        if target:
-            # Try to close specific application/window
-            if HAS_PYGETWINDOW:
-                try:
-                    # Get all windows
-                    windows = gw.getAllWindows()
-                    closed_count = 0
-                    
-                    # Debug: List all open windows
-                    open_titles = [w.title for w in windows if w.title]
-                    self.logger.info(f"Open windows: {open_titles}")
-                    
-                    for window in windows:
-                        # Check if target is in window title (case insensitive)
-                        if window.title and target.lower() in window.title.lower():
-                            self.logger.info(f"Closing window: {window.title}")
-                            window.close()
-                            closed_count += 1
-                    
-                    if closed_count > 0:
-                        return TaskResult(
-                            status=TaskStatus.COMPLETED,
-                            message=f"Closed {closed_count} window(s) matching '{target}'"
-                        )
-                    else:
-                        return TaskResult(
-                            status=TaskStatus.FAILED,
-                            message=f"No open windows found matching '{target}'. Available: {open_titles[:5]}..."
-                        )
-                except Exception as e:
-                    self.logger.error(f"Error closing window: {e}")
-                    return TaskResult(
-                        status=TaskStatus.FAILED,
-                        message=f"Error closing '{target}': {str(e)}"
-                    )
-            else:
-                 return TaskResult(
-                    status=TaskStatus.FAILED,
-                    message="Window management library not available"
-                )
-
-        # If no target specified, close current window
-        # Try Alt+F4 to close current window
-        if self.screen_agent.key_combination('alt', 'f4'):
-            return TaskResult(
-                status=TaskStatus.COMPLETED,
-                message="Closed current window"
-            )
-        
-        return TaskResult(
-            status=TaskStatus.FAILED,
-            message="Failed to close window"
-        )
-    
     def _handle_create_action(self, command: ParsedCommand) -> TaskResult:
         """Handle create actions (files, folders, etc.)."""
         if not command.target:
@@ -721,11 +765,19 @@ class TaskEngine:
             message="Failed to close window"
         )
     
+    @staticmethod
+    def _start_process(name: str):
+        """Launch via the shell's `start`, which also resolves registered App Paths
+        (chrome, excel, ...). Passing a list keeps the name quoted as one argument."""
+        import subprocess
+        subprocess.Popen(['cmd', '/c', 'start', '', name],
+                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
     def _launch_vscode(self) -> TaskResult:
         """Launch Visual Studio Code."""
         import subprocess
         try:
-            subprocess.Popen(['code'], shell=True)
+            self._start_process('code')
             time.sleep(3)  # Wait for application to start
             return TaskResult(
                 status=TaskStatus.COMPLETED,
@@ -741,7 +793,7 @@ class TaskEngine:
         """Launch Google Chrome."""
         import subprocess
         try:
-            subprocess.Popen(['chrome'], shell=True)
+            self._start_process('chrome')
             time.sleep(3)
             return TaskResult(
                 status=TaskStatus.COMPLETED,
@@ -757,7 +809,7 @@ class TaskEngine:
         """Launch Notepad."""
         import subprocess
         try:
-            subprocess.Popen(['notepad'], shell=True)
+            self._start_process('notepad')
             time.sleep(2)
             return TaskResult(
                 status=TaskStatus.COMPLETED,
@@ -773,7 +825,7 @@ class TaskEngine:
         """Launch File Explorer."""
         import subprocess
         try:
-            subprocess.Popen(['explorer'], shell=True)
+            self._start_process('explorer')
             time.sleep(2)
             return TaskResult(
                 status=TaskStatus.COMPLETED,
@@ -789,7 +841,7 @@ class TaskEngine:
         """Launch Terminal/Command Prompt."""
         import subprocess
         try:
-            subprocess.Popen(['cmd'], shell=True)
+            self._start_process('cmd')
             time.sleep(2)
             return TaskResult(
                 status=TaskStatus.COMPLETED,
@@ -805,7 +857,7 @@ class TaskEngine:
         """Launch a generic application by name."""
         import subprocess
         try:
-            subprocess.Popen([app_name], shell=True)
+            self._start_process(app_name)
             time.sleep(3)
             return TaskResult(
                 status=TaskStatus.COMPLETED,

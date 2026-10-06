@@ -22,29 +22,25 @@ class TestScreenAgent(unittest.TestCase):
     
     def test_initialization(self):
         """Test ScreenAgent initialization."""
-        self.assertIsNotNone(self.screen_agent.screen_monitor)
+        # mss is opened per capture (thread safety), so there is no long-lived monitor
         self.assertEqual(self.screen_agent.confidence_threshold, 0.8)
-    
+
     @patch('src.core.screen_agent.mss.mss')
     def test_capture_screen(self, mock_mss):
         """Test screen capture functionality."""
-        # Mock the screenshot
-        mock_screenshot = Mock()
-        mock_screenshot.__array__ = Mock(return_value=np.zeros((100, 100, 4), dtype=np.uint8))
-        
-        mock_monitor = Mock()
-        mock_monitor.grab.return_value = mock_screenshot
-        mock_mss.return_value = mock_monitor
-        
-        # Create new instance with mocked mss
-        agent = ScreenAgent()
-        agent.screen_monitor = mock_monitor
-        
-        # Test capture
-        result = agent.capture_screen()
-        
-        self.assertIsNotNone(result)
+        # mss.mss() is used as a context manager; grab() returns a BGRA image
+        sct = MagicMock()
+        sct.monitors = [{'top': 0, 'left': 0, 'width': 200, 'height': 100},
+                        {'top': 0, 'left': 0, 'width': 100, 'height': 100}]
+        sct.grab.return_value = np.zeros((100, 100, 4), dtype=np.uint8)
+        mock_mss.return_value.__enter__.return_value = sct
+
+        result = self.screen_agent.capture_screen()
+
         self.assertIsInstance(result, np.ndarray)
+        self.assertEqual(result.shape, (100, 100, 3))  # BGRA -> BGR
+        # Primary monitor, so OCR coordinates line up with pyautogui clicks
+        sct.grab.assert_called_once_with(sct.monitors[1])
     
     @patch('src.core.screen_agent.pyautogui.click')
     def test_click_element(self, mock_click):

@@ -10,7 +10,7 @@ Lucky, I've successfully integrated **Google Gemini AI** into your Byte Smart as
 
 ### 1. **API Key Added** ✅
 ```
-GEMINI_API_KEY=AIzaSyBKvCu8o0SWKHt_mpoqPT_QYErw7TLdp-4
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 Added to `.env` file
 

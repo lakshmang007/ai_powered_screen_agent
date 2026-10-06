@@ -25,7 +25,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 import threading
+import webbrowser
+from urllib.parse import quote_plus
 from src.gui.jarvis_overlay import JarvisOverlay
+
+# Resolve macros relative to the project, not whatever directory JARVIS was launched from
+MACRO_DIR = Path(__file__).resolve().parent / "macros"
+
+BROWSER_COMMANDS = {"chrome": "chrome", "firefox": "firefox", "edge": "msedge", "msedge": "msedge"}
+
+
+def open_url(url, browser=None):
+    """Open a URL in a specific browser (chrome/firefox/edge) or the default one.
+
+    The URL is quoted for cmd's `start`, so '&' in query strings no longer splits
+    the command line.
+    """
+    exe = BROWSER_COMMANDS.get((browser or "").lower())
+    if exe:
+        try:
+            subprocess.Popen(f'start "" {exe} "{url}"', shell=True)
+            return True
+        except Exception:
+            pass
+    return webbrowser.open(url)
 
 class ContextMemory:
     """Remembers what JARVIS has done recently."""
@@ -135,22 +158,30 @@ def install_app(app_name, voice):
     voice.speak(f"Attempting to install {app_name}, Lucky. This might take a moment.")
     
     try:
-        # Run winget search to check if it exists
-        search_cmd = f"winget search \"{app_name}\""
-        result = subprocess.run(search_cmd, shell=True, capture_output=True, text=True)
-        
-        if "No package found" in result.stdout:
+        # Run winget search to check if it exists. Arguments are passed as a list so a
+        # misheard name can't inject extra shell commands.
+        result = subprocess.run(
+            ["winget", "search", "--accept-source-agreements", app_name],
+            capture_output=True, text=True, timeout=60
+        )
+
+        if result.returncode != 0 or "No package found" in result.stdout:
             print(f"❌ Could not find {app_name}")
             voice.speak(f"I couldn't find {app_name} in the repository, Lucky.")
             return False
-            
-        # If found, install
+
+        # If found, install in its own console so the user can see/answer prompts
         voice.speak(f"Found {app_name}. Starting installation. Please check for any prompts.")
-        # Open a new terminal for installation so the user can see/interact
-        install_cmd = f"start cmd /k winget install \"{app_name}\""
-        subprocess.Popen(install_cmd, shell=True)
-        
+        subprocess.Popen(
+            ["cmd", "/k", "winget", "install", app_name],
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        )
+
         return True
+    except FileNotFoundError:
+        print("❌ winget is not available on this system")
+        voice.speak("Winget is not available on this system, Lucky.")
+        return False
     except Exception as e:
         print(f"❌ Error installing: {e}")
         voice.speak("There was an error initiating the installation protocol.")
@@ -160,33 +191,25 @@ def install_app(app_name, voice):
 def go_to_website(url, voice):
     """Go to a specific website."""
     # Clean up URL
-    url = url.lower().strip()
-    if url.startswith("go to "):
-        url = url[6:]
-    if url.startswith("visit "):
-        url = url[6:]
-        
+    url = url.strip().rstrip('.')
+    url = re.sub(r'^(go to|visit)\s+', '', url, flags=re.IGNORECASE)
+    url = re.sub(r'\s+(website|site|page)$', '', url, flags=re.IGNORECASE)
+    # Speech recognition writes "youtube dot com"
+    url = re.sub(r'\s+dot\s+', '.', url, flags=re.IGNORECASE).replace(' ', '')
+
     # Add https if missing
-    if not url.startswith('http'):
-        if not url.startswith('www.') and '.' not in url:
+    if not url.lower().startswith('http'):
+        if not url.lower().startswith('www.') and '.' not in url:
             url = f"{url}.com"
         url = 'https://' + url
-    
+
     print(f"🌐 Visiting {url}...")
     voice.speak(f"Navigating to {url}, Lucky.")
-    
-    try:
-        # Try Chrome first
-        subprocess.Popen(f"start chrome {url}", shell=True)
+
+    if open_url(url):
         return True
-    except:
-        try:
-            # Try Edge
-            subprocess.Popen(f"start msedge {url}", shell=True)
-            return True
-        except:
-            voice.speak("I couldn't open the browser, Lucky.")
-            return False
+    voice.speak("I couldn't open the browser, Lucky.")
+    return False
 
 
 def main():
@@ -266,13 +289,16 @@ def main():
     run_jarvis(voice, nlp, engine, intelligent, context, smart_opener, interrupt_event)
 
 
-def run_jarvis(voice, nlp, engine, intelligent, context, smart_opener, interrupt_event):
+def run_jarvis(voice, nlp, engine, intelligent, context, smart_opener, interrupt_event=None):
     """Main JARVIS interaction loop with GUI."""
-    
+    if interrupt_event is None:
+        interrupt_event = threading.Event()
+
     # Shared state
     state = {
         "running": True,
-        "interrupted": False
+        "interrupted": False,
+        "interrupt_event": interrupt_event
     }
 
     def on_interrupt():
@@ -322,7 +348,7 @@ def _jarvis_logic(voice, nlp, engine, intelligent, context, smart_opener, overla
             # Check for interruption
             if state["interrupted"]:
                 state["interrupted"] = False
-                interrupt_event.clear() # Reset interrupt signal
+                state["interrupt_event"].clear() # Reset interrupt signal
                 voice.stop_speaking()
                 overlay.update_status("Interrupted", "#FF4444")
                 overlay.update_text("Ready for new command...")
@@ -461,19 +487,28 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
     print(f"[JARVIS] JARVIS: {ack}")
     voice.speak(ack)
 
-    try:
-        cmd_lower = command_text.lower()
+    if context is None:
+        context = ContextMemory()
 
-        # 1. Check for SHUTDOWN command (flexible patterns)
+    try:
+        cmd_lower = command_text.lower().strip()
+
+        # 1. Check for SHUTDOWN command. Only explicit phrases count, and the user must
+        #    confirm: a misheard sentence must never power the machine off.
         shutdown_patterns = [
-            r'\b(shutdown|shut\s+down)\s+(the\s+)?(system|computer|pc|machine)\b',
-            r'\bpower\s+off\b',
-            r'\bshutdown\b(?!\s+\w)',  # "shutdown" not followed by another word (to avoid "shutdown chrome")
-            r'\bshut\s+down\b(?!\s+(the|a|an|my)\s+\w)',  # "shut down" not followed by "the/a/an/my [app]"
+            r'\b(shutdown|shut\s+down)\s+(the\s+|my\s+)?(system|computer|pc|machine|laptop)\b',
+            r'\bpower\s+off\s+(the\s+|my\s+)?(system|computer|pc|machine|laptop)\b',
+            r'^(shutdown|shut\s+down|power\s+off)$',
         ]
-        
+
         if any(re.search(pattern, cmd_lower) for pattern in shutdown_patterns):
             print("[SHUTDOWN] System shutdown requested")
+            voice.speak("Are you sure you want me to shut down the computer, Lucky? Say yes to confirm.", async_speech=False)
+            confirmation = listen_for_input(voice, timeout=10)
+            if not confirmation or not is_positive_response(confirmation) or is_negative_response(confirmation):
+                print("[SHUTDOWN] Cancelled (not confirmed)")
+                voice.speak("Shutdown cancelled, Lucky.")
+                return False
             voice.speak("Initiating system shutdown sequence, Lucky.")
             
             # Check if we should close all apps first
@@ -502,26 +537,18 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 voice.speak("I encountered an error initiating shutdown, Lucky.")
                 return False
 
-        # 2. Check for INSTALL command
-        if "install" in cmd_lower:
-            # Extract app name
-            app_name = cmd_lower.split("install")[-1].strip()
+        # 2. Check for INSTALL command ("install spotify", "please install vlc")
+        install_match = re.match(r'^(?:please\s+|can you\s+|could you\s+)?install\s+(.+)$', cmd_lower)
+        if install_match:
+            app_name = re.sub(r'\s+(for me|please)$', '', install_match.group(1)).strip()
             if app_name:
                 return install_app(app_name, voice)
-        
+
         # 3. Check for GO TO WEBSITE command
-        if "go to" in cmd_lower and ("website" in cmd_lower or ".com" in cmd_lower or "www" in cmd_lower or "http" in cmd_lower):
-            # Extract URL
-            url = cmd_lower.split("go to")[-1].strip()
-            # Remove "website" if present
-            url = url.replace("website", "").strip()
-            if url:
-                return go_to_website(url, voice)
-        
-        if "visit" in cmd_lower:
-             url = cmd_lower.split("visit")[-1].strip()
-             if url:
-                 return go_to_website(url, voice)
+        site_match = re.search(r'\b(?:go to|visit|open website|navigate to)\s+(.+)$', command_text, re.IGNORECASE)
+        if site_match and (re.search(r'\b(visit|website)\b', cmd_lower) or
+                           re.search(r'\.(com|org|net|in|io|dev|ai|edu)\b|\bdot\s+(com|org|net|in|io)\b|www|http', cmd_lower)):
+            return go_to_website(site_match.group(1), voice)
 
         # 4. Check for MINIMIZE ALL WINDOWS command
         if re.search(r'\b(minimize|minimise)\s+(all\s+)?(windows|window|apps|applications)\b', cmd_lower):
@@ -548,9 +575,8 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
             voice.speak("Let me check the available macros, Lucky.")
             
             try:
-                from pathlib import Path
-                macro_dir = Path("macros")
-                
+                macro_dir = MACRO_DIR
+
                 if not macro_dir.exists() or not list(macro_dir.glob("*.json")):
                     print("[MACROS] No macros found")
                     voice.speak("I couldn't find any recorded macros, Lucky.")
@@ -585,12 +611,15 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 voice.speak(f"Playing macro {macro_name}, Lucky.")
                 
                 try:
-                    from pathlib import Path
-                    import json
-                    
-                    macro_dir = Path("macros")
-                    macro_file = macro_dir / f"{macro_name}.json"
-                    
+                    macro_file = MACRO_DIR / f"{macro_name}.json"
+                    if not macro_file.exists():
+                        # Spoken names rarely match file names exactly ("To Do" vs "todo")
+                        wanted = re.sub(r'[^a-z0-9]', '', macro_name)
+                        for candidate in MACRO_DIR.glob("*.json"):
+                            if re.sub(r'[^a-z0-9]', '', candidate.stem.lower()) == wanted:
+                                macro_file = candidate
+                                break
+
                     if not macro_file.exists():
                         print(f"[ERROR] Macro '{macro_name}' not found")
                         voice.speak(f"I couldn't find a macro named {macro_name}, Lucky.")
@@ -686,6 +715,20 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 parsed = nlp.parse_command(step)
                 print(f"[NLP] Understanding: {parsed.action.value} on {parsed.application.value}")
 
+                # "open X" steps use the smart opener (taskbar -> installed -> browser)
+                step_app = extract_app_name(step) if parsed.action.value == 'open' else None
+                if step_app and smart_opener:
+                    open_result = smart_opener.open_app_smart(step_app)
+                    ok = open_result.get('status') in ('completed', 'already_open')
+                    if ok:
+                        context.add_action('open', {'app': step_app})
+                        print(f"[SUCCESS] Step {i} completed")
+                        time.sleep(2)  # Give the app time to take focus before typing
+                        continue
+                    print(f"[FAILED] Step {i} failed: {open_result.get('message')}")
+                    all_success = False
+                    break
+
                 # Execute the step
                 result = engine.execute_command(parsed)
 
@@ -749,19 +792,35 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                     return True
                 elif result['status'] == 'cancelled':
                     return False
-                else:
+                elif result.get('download_url') or result.get('search_url'):
+                    # System search offered a download page and the user accepted
+                    url = result.get('download_url') or result.get('search_url')
+                    voice.speak(f"Opening the download page for {app_name}, Lucky.")
+                    return open_url(url)
+                elif intelligent is not None:
                     # Fall back to old method
                     action_details = intelligent.handle_ambiguous_open_command(app_name)
                     return execute_intelligent_action(action_details, voice, engine)
-            elif app_name:
+                else:
+                    voice.speak(f"I couldn't open {app_name}, Lucky.")
+                    return False
+            elif app_name and intelligent is not None:
                 # No smart opener, use old method
                 action_details = intelligent.handle_ambiguous_open_command(app_name)
                 return execute_intelligent_action(action_details, voice, engine)
 
         # Handle SEARCH commands with intelligence
         elif action_str == "search":
-            query = parsed.parameters.get("query", command_text)
-            action_details = intelligent.handle_search_command(query)
+            query = parsed.parameters.get("query") or parsed.target or command_text
+            engine_hint = parsed.parameters.get("engine")
+            if engine_hint == "youtube":
+                url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+                voice.speak(f"Searching YouTube for {query}, Lucky.")
+                return open_url(url)
+            if intelligent is not None and not engine_hint:
+                action_details = intelligent.handle_search_command(query)
+            else:
+                action_details = {"query": query, "engine": engine_hint or "google", "browser": None}
             return execute_search_action(action_details, voice)
 
         # Execute normally
@@ -877,71 +936,66 @@ def execute_intelligent_action(action_details, voice, engine):
     elif action == "open_browser":
         url = action_details.get("url")
         browser = action_details.get("browser", "chrome")
-        try:
-            if browser == "chrome":
-                subprocess.Popen(["start", "chrome", url], shell=True)
-            elif browser == "firefox":
-                subprocess.Popen(["start", "firefox", url], shell=True)
-            elif browser == "edge":
-                subprocess.Popen(["start", "msedge", url], shell=True)
+        if open_url(url, browser):
             print(f"✅ Opened in {browser}")
             voice.speak("Browser launched, Lucky.")
             return True
-        except Exception as e:
-            print(f"❌ Failed: {e}")
-            voice.speak("Browser launch failed.")
-            return False
-    
+        print("❌ Failed to open browser")
+        voice.speak("Browser launch failed.")
+        return False
+
     return False
 
 
 def execute_search_action(action_details, voice):
     """Execute search action."""
-    query = action_details.get("query")
-    engine_name = action_details.get("engine", "google")
-    browser = action_details.get("browser", "chrome")
-    
-    # Build search URL
+    query = action_details.get("query") or ""
+    engine_name = action_details.get("engine") or "google"
+    browser = action_details.get("browser")
+
+    # Build search URL (quote_plus also escapes &, #, ? in the query)
+    q = quote_plus(query)
     search_urls = {
-        "google": f"https://www.google.com/search?q={query.replace(' ', '+')}",
-        "bing": f"https://www.bing.com/search?q={query.replace(' ', '+')}",
-        "duckduckgo": f"https://duckduckgo.com/?q={query.replace(' ', '+')}"
+        "google": f"https://www.google.com/search?q={q}",
+        "bing": f"https://www.bing.com/search?q={q}",
+        "duckduckgo": f"https://duckduckgo.com/?q={q}",
+        "youtube": f"https://www.youtube.com/results?search_query={q}",
     }
-    
+
     url = search_urls.get(engine_name, search_urls["google"])
-    
-    try:
-        if browser == "chrome":
-            subprocess.Popen(["start", "chrome", url], shell=True)
-        elif browser == "firefox":
-            subprocess.Popen(["start", "firefox", url], shell=True)
-        elif browser == "edge":
-            subprocess.Popen(["start", "msedge", url], shell=True)
-        
-        print(f"✅ Searching {engine_name} for '{query}' in {browser}")
+
+    if open_url(url, browser):
+        print(f"✅ Searching {engine_name} for '{query}' in {browser or 'default browser'}")
         voice.speak("Search initiated, Lucky.")
         return True
-    except Exception as e:
-        print(f"❌ Failed: {e}")
-        voice.speak("Search failed.")
-        return False
+    print("❌ Search failed")
+    voice.speak("Search failed.")
+    return False
 
 
 # Helper functions
+# Whole-word matching: plain substring checks made "restart" mean sleep,
+# "notepad"/"know" mean "no" and "exit chrome" quit JARVIS.
+def _has_phrase(text, phrases):
+    text = (text or "").lower()
+    return any(re.search(rf"\b{re.escape(p)}\b", text) for p in phrases)
+
 def is_wake_word(text):
-    return any(word in text for word in ["jarvis", "jarves", "jar vis"])
+    return _has_phrase(text, ["jarvis", "jarves", "jar vis"])
 
 def is_sleep_command(text):
-    return any(word in text for word in ["sleep", "standby", "rest", "power down"])
+    return _has_phrase(text, ["go to sleep", "sleep", "standby", "stand by", "take a rest", "power down"])
 
 def is_exit_command(text):
-    return any(word in text for word in ["exit", "quit", "goodbye", "bye"])
+    text = (text or "").lower().strip()
+    # Only exit when the whole utterance is an exit phrase ("exit chrome" is a command)
+    return bool(re.fullmatch(r"(jarvis\s+)?(exit|quit|goodbye|good bye|bye|bye bye|shut yourself down)(\s+jarvis)?", text))
 
 def is_positive_response(text):
-    return any(word in text for word in ["yes", "yeah", "yep", "sure", "okay", "ok", "affirmative", "proceed"])
+    return _has_phrase(text, ["yes", "yeah", "yep", "sure", "okay", "ok", "affirmative", "proceed", "go ahead", "haan"])
 
 def is_negative_response(text):
-    return any(word in text for word in ["no", "nope", "nothing", "negative", "cancel"])
+    return _has_phrase(text, ["no", "nope", "nothing", "negative", "cancel", "nahi", "that's all", "thats all"])
 
 
 if __name__ == "__main__":

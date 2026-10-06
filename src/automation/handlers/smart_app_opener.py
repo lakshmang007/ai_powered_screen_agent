@@ -4,8 +4,10 @@ Smart App Opener - Intelligently opens apps by checking taskbar first
 """
 
 import logging
+import re
 import subprocess
 import time
+import webbrowser
 from typing import Optional, Dict, Any, Tuple
 
 try:
@@ -65,6 +67,28 @@ class SmartAppOpener:
             'canva': 'https://canva.com',
         }
     
+    @staticmethod
+    def _name_matches(key: str, name: str) -> bool:
+        """Whole-word match, so 'x' doesn't match 'excel' and 'word' doesn't match 'wordpad'."""
+        return re.search(rf'\b{re.escape(key)}\b', name) is not None
+
+    def _listen(self, timeout: int = 10) -> Optional[str]:
+        """Listen for a short answer with whichever API the voice processor offers."""
+        vp = self.voice_processor
+        if vp is None:
+            return None
+        try:
+            if hasattr(vp, 'listen_once'):
+                try:
+                    return vp.listen_once(timeout=timeout, phrase_time_limit=10)
+                except TypeError:
+                    return vp.listen_once()
+            if hasattr(vp, 'listen'):
+                return vp.listen(timeout=timeout)
+        except Exception as e:
+            self.logger.error(f"Listening failed: {e}")
+        return None
+
     def open_app_smart(self, app_name: str, force_windows_search: bool = False) -> Dict[str, Any]:
         """
         Smart app opening with taskbar checking.
@@ -132,6 +156,13 @@ class SmartAppOpener:
                     app_name
                 )
 
+            # The user already agreed to open a download / search page
+            offered_url = search_result.get('download_url') or search_result.get('search_url')
+            if offered_url:
+                return self.open_in_browser(app_name, offered_url)
+            if search_result.get('action') == 'cancelled':
+                return {'status': 'cancelled', 'message': search_result.get('message', 'User cancelled')}
+
         # Step 4: App not installed, ask to open in browser
         self.logger.info(f"{app_name} not installed, asking to open in browser")
         
@@ -193,9 +224,9 @@ class SmartAppOpener:
                 
                 window_title_lower = window_title.lower()
                 
-                # Check for match with any search term
+                # Check for match with any search term (whole words only)
                 for term in search_terms:
-                    if term in window_title_lower:
+                    if self._name_matches(term, window_title_lower):
                         # Found matching window
                         windows = gw.getWindowsWithTitle(window_title)
                         if windows:
@@ -280,7 +311,7 @@ class SmartAppOpener:
             web_url = None
 
             for key, url in self.web_urls.items():
-                if key in app_name_lower or app_name_lower in key:
+                if key == app_name_lower or self._name_matches(key, app_name_lower):
                     web_url = url
                     break
 
@@ -303,13 +334,13 @@ class SmartAppOpener:
                 )
 
                 # Listen for response
-                response = self.voice_processor.listen(timeout=10)
+                response = self._listen(timeout=10)
 
                 if response:
                     response_lower = response.lower()
 
                     # Check for positive response
-                    if any(word in response_lower for word in ['yes', 'yeah', 'sure', 'ok', 'okay', 'open', 'go ahead']):
+                    if any(self._name_matches(word, response_lower) for word in ['yes', 'yeah', 'sure', 'ok', 'okay', 'open', 'go ahead', 'haan']):
                         # Ask which browser
                         return self.open_in_browser(app_name, web_url)
                     else:
@@ -341,13 +372,13 @@ class SmartAppOpener:
             Result dictionary
         """
         try:
-            # Ask which browser if voice processor available
-            browser = 'chrome'  # Default
+            # Ask which browser if voice processor available; None = system default
+            browser = None
 
             if self.voice_processor:
                 self.voice_processor.speak("Which browser? Chrome, Firefox, or Edge?")
 
-                response = self.voice_processor.listen(timeout=10)
+                response = self._listen(timeout=10)
 
                 if response:
                     response_lower = response.lower()
@@ -356,20 +387,25 @@ class SmartAppOpener:
                         browser = 'firefox'
                     elif 'edge' in response_lower:
                         browser = 'msedge'
-                    else:
+                    elif 'chrome' in response_lower:
                         browser = 'chrome'
 
             # Open in browser
-            self.logger.info(f"Opening {app_name} in {browser}: {url}")
+            browser_label = browser or 'your default browser'
+            self.logger.info(f"Opening {app_name} in {browser_label}: {url}")
 
-            subprocess.Popen(['start', browser, url], shell=True)
+            if browser:
+                # Quote the URL so '&' in query strings isn't parsed by cmd
+                subprocess.Popen(f'start "" {browser} "{url}"', shell=True)
+            else:
+                webbrowser.open(url)
 
             if self.voice_processor:
-                self.voice_processor.speak(f"Opening {app_name} in {browser}")
+                self.voice_processor.speak(f"Opening {app_name} in {browser_label}")
 
             return {
                 'status': 'completed',
-                'message': f'Opened {app_name} in {browser}'
+                'message': f'Opened {app_name} in {browser_label}'
             }
 
         except Exception as e:

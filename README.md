@@ -40,12 +40,27 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
+AI parsing is optional. With `GEMINI_API_KEY` or `GROQ_API_KEY` set, the matching provider is
+picked automatically (override with `AI_PROVIDER`). Without a key, the built-in regex parser is used.
+
 ## Usage
 
 Run the main application:
 ```bash
-python main.py
+python main.py            # GUI
+python main.py --cli      # text commands in the terminal
+python main.py --voice    # JARVIS voice mode (say "JARVIS")
 ```
+
+Run the tests (no network, microphone or screen access needed):
+```bash
+python -m pytest tests
+```
+
+Example commands: `open notepad and type Hello World`, `go to github.com`,
+`search for python tutorials on youtube`, `select all`, `erase that and type hi`,
+`press enter`, `minimize all windows`, `play macro todo`.
+Shutting down the computer always asks for a spoken "yes" first.
 
 ## Project Structure
 

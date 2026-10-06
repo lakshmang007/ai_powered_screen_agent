@@ -77,12 +77,19 @@ class ScreenAgent:
         if not HAS_MSS:
             self.logger.warning("mss not available - screen capture disabled")
 
-        # Configure Tesseract path if needed (Windows)
+        # Configure Tesseract path if needed (Windows). TESSERACT_CMD in .env wins;
+        # otherwise use a default install location only if it exists, so a
+        # tesseract.exe on PATH keeps working.
         if HAS_PYTESSERACT and os.name == 'nt':
-            try:
-                pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-            except:
-                pass
+            candidates = [
+                os.getenv('TESSERACT_CMD'),
+                r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+                r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+            ]
+            for candidate in candidates:
+                if candidate and os.path.exists(candidate):
+                    pytesseract.pytesseract.tesseract_cmd = candidate
+                    break
     
     def capture_screen(self, region: Optional[Dict[str, int]] = None) -> np.ndarray:
         """
@@ -102,7 +109,9 @@ class ScreenAgent:
                 if region:
                     screenshot = sct.grab(region)
                 else:
-                    screenshot = sct.grab(sct.monitors[0])
+                    # monitors[1] is the primary display. monitors[0] spans every
+                    # monitor, whose origin doesn't match pyautogui's click coordinates.
+                    screenshot = sct.grab(sct.monitors[1])
                 
                 # Convert to numpy array
                 img = np.array(screenshot)
@@ -166,7 +175,7 @@ class ScreenAgent:
             if screenshot is None:
                 screenshot = self.capture_screen()
             
-            if screenshot is None:
+            if screenshot is None or not HAS_PYTESSERACT:
                 return []
             
             # Convert to PIL Image for OCR
@@ -183,7 +192,7 @@ class ScreenAgent:
                 if not word.strip():
                     continue
                     
-                if search_text in word.lower() and int(ocr_data['conf'][i]) > 30:
+                if search_text in word.lower() and float(ocr_data['conf'][i]) > 30:
                     x = ocr_data['left'][i]
                     y = ocr_data['top'][i]
                     w = ocr_data['width'][i]
@@ -219,7 +228,7 @@ class ScreenAgent:
                         # Check confidence of all words in the sequence
                         # We need to check all valid words in the range
                         sequence_indices = [valid_words[k]['index'] for k in range(i, i+n_words)]
-                        confidences = [int(ocr_data['conf'][idx]) for idx in sequence_indices]
+                        confidences = [float(ocr_data['conf'][idx]) for idx in sequence_indices]
                         
                         if all(c > 30 for c in confidences):
                             x1 = ocr_data['left'][start_idx]

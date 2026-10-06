@@ -31,14 +31,45 @@ class IntelligentAssistant:
         # Known applications and their paths
         self.known_apps = self._discover_applications()
     
+    # Discovery walks Program Files/AppData; do it once per process, not per command
+    _discovered_apps_cache: Optional[Dict[str, str]] = None
+
     def _discover_applications(self) -> Dict[str, str]:
-        """Discover installed applications on the system."""
+        """Discover installed applications on the system (cached)."""
+        if IntelligentAssistant._discovered_apps_cache is None:
+            IntelligentAssistant._discovered_apps_cache = self._scan_for_applications()
+        return dict(IntelligentAssistant._discovered_apps_cache)
+
+    @staticmethod
+    def _pick_executable(folder: str, app_name: str, max_depth: int = 3) -> Optional[str]:
+        """Pick the most likely main .exe in an install folder, skipping
+        uninstallers/updaters (os.walk's first .exe was often unins000.exe)."""
+        skip = ('unins', 'uninstall', 'update', 'setup', 'crash', 'helper', 'installer', 'elevat')
+        best, best_score = None, -1
+        base_depth = folder.rstrip(os.sep).count(os.sep)
+        for root, dirs, files in os.walk(folder):
+            if root.count(os.sep) - base_depth >= max_depth:
+                dirs[:] = []
+            for file in files:
+                lower = file.lower()
+                if not lower.endswith('.exe') or any(word in lower for word in skip):
+                    continue
+                score = 2 if app_name in lower else (1 if lower[:-4] in folder.lower() else 0)
+                if score > best_score:
+                    best, best_score = os.path.join(root, file), score
+                    if score == 2:
+                        return best
+        return best
+
+    def _scan_for_applications(self) -> Dict[str, str]:
+        """Scan common install locations for well-known applications."""
         apps = {}
-        
+
         # Common application paths
         common_paths = [
             r"C:\Program Files",
             r"C:\Program Files (x86)",
+            os.path.expanduser("~\\AppData\\Local\\Programs"),  # per-user installs (VS Code, Discord, ...)
             os.path.expanduser("~\\AppData\\Local"),
             os.path.expanduser("~\\AppData\\Roaming"),
         ]
@@ -65,18 +96,17 @@ class IntelligentAssistant:
                 for item in os.listdir(base_path):
                     item_lower = item.lower()
                     for app_name, patterns in app_patterns.items():
-                        for pattern in patterns:
-                            if pattern.lower() in item_lower:
-                                full_path = os.path.join(base_path, item)
-                                if os.path.isdir(full_path):
-                                    # Look for .exe files
-                                    for root, dirs, files in os.walk(full_path):
-                                        for file in files:
-                                            if file.endswith('.exe'):
-                                                apps[app_name] = os.path.join(root, file)
-                                                break
-                                        if app_name in apps:
-                                            break
+                        if app_name in apps:
+                            continue
+                        # Top-level folder names only, e.g. "Spotify" or "Microsoft VS Code"
+                        if any(pattern.split('\\')[0].lower() == item_lower or
+                               (len(pattern) > 4 and pattern.lower() in item_lower)
+                               for pattern in patterns):
+                            full_path = os.path.join(base_path, item)
+                            if os.path.isdir(full_path):
+                                exe = self._pick_executable(full_path, app_name)
+                                if exe:
+                                    apps[app_name] = exe
             except (PermissionError, OSError):
                 continue
         
@@ -96,7 +126,7 @@ class IntelligentAssistant:
         
         # Check known apps
         for known_app, path in self.known_apps.items():
-            if known_app in app_lower or app_lower in known_app:
+            if known_app == app_lower or known_app in app_lower.split():
                 return True, path
         
         return False, None
@@ -118,6 +148,8 @@ class IntelligentAssistant:
         if options:
             print(f"   Options: {', '.join(options)}")
         
+        if hasattr(self.voice, 'wait_until_done'):
+            self.voice.wait_until_done()
         print("🎤 Listening for your answer...")
         response = self.voice.listen_once(timeout=15, phrase_time_limit=20)
         
@@ -302,7 +334,7 @@ class IntelligentAssistant:
         question = f"Should I {action_description}?"
         response = self.ask_follow_up_question(question, ["yes", "no"])
         
-        if response and ("yes" in response or "yeah" in response or "haan" in response or "ok" in response):
+        if response and set(response.replace(',', ' ').split()) & {"yes", "yeah", "yep", "haan", "ok", "okay", "sure"}:
             return True
         
         return False

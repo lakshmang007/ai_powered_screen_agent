@@ -12,7 +12,7 @@ import os
 
 from ..core.screen_agent import ScreenAgent
 from ..core.voice_processor import VoiceProcessor
-from ..core.nlp_processor import NLPProcessor, ParsedCommand
+from ..core.nlp_processor import NLPProcessor, ParsedCommand, ApplicationType
 from ..automation.task_engine import TaskEngine, TaskResult, TaskStatus
 from ..automation.handlers import VSCodeHandler, GmailHandler, LinkedInHandler, BrowserHandler
 from .jarvis_overlay import JarvisOverlay
@@ -33,9 +33,10 @@ class MainWindow:
         # Try to use Indian English Voice Processor (Byte Smart)
         try:
             from ..core.indian_english_voice_processor import IndianEnglishVoiceProcessor
-            self.voice_processor = IndianEnglishVoiceProcessor()
+            self.voice_processor = IndianEnglishVoiceProcessor(wake_word="jarvis")
             self.has_byte_smart = True
-        except ImportError:
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Falling back to basic voice processor: {e}")
             self.voice_processor = VoiceProcessor()
             self.has_byte_smart = False
 
@@ -51,7 +52,7 @@ class MainWindow:
             self.smart_opener = SmartAppOpener(voice_processor=self.voice_processor,
                                               system_search_handler=system_search)
             self.has_smart_opener = True
-        except ImportError:
+        except Exception:
             self.smart_opener = None
             self.has_smart_opener = False
 
@@ -73,7 +74,8 @@ class MainWindow:
             self.macro_recorder = None  # Will be created when recording starts
             self.has_macro_support = HAS_PYNPUT  # Check if pynput is actually available
             self.is_recording_macro = False
-            self.macro_save_dir = "macros"
+            self.macro_save_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "macros")
             os.makedirs(self.macro_save_dir, exist_ok=True)
         except ImportError:
             self.has_macro_support = False
@@ -106,7 +108,6 @@ class MainWindow:
     
     def _setup_handlers(self):
         """Setup application-specific handlers."""
-        from ..core.nlp_processor import ApplicationType
         
         # Register handlers with the task engine
         vscode_handler = VSCodeHandler(self.screen_agent)
@@ -114,9 +115,6 @@ class MainWindow:
         linkedin_handler = LinkedInHandler(self.screen_agent)
         browser_handler = BrowserHandler(self.screen_agent)
         
-        self.task_engine.register_app_handler(ApplicationType.VSCODE, vscode_handler.handle_command)
-        self.task_engine.register_app_handler(ApplicationType.GMAIL, gmail_handler.handle_command)
-        self.task_engine.register_app_handler(ApplicationType.LINKEDIN, linkedin_handler.handle_command)
         self.task_engine.register_app_handler(ApplicationType.VSCODE, vscode_handler.handle_command)
         self.task_engine.register_app_handler(ApplicationType.GMAIL, gmail_handler.handle_command)
         self.task_engine.register_app_handler(ApplicationType.LINKEDIN, linkedin_handler.handle_command)
@@ -695,12 +693,7 @@ class MainWindow:
                         self.overlay.update_status("Processing...", "#FFA500")
                         self.overlay.update_text(f"Command: {command}")
                     
-                    # Create a dummy intelligent assistant if needed or use existing
-                    intelligent = None
-                    if hasattr(self, 'has_byte_smart') and self.has_byte_smart:
-                         # We can try to import IntelligentAssistant
-                         from src.core.intelligent_assistant import IntelligentAssistant
-                         intelligent = IntelligentAssistant(self.voice_processor, self.nlp_processor)
+                    intelligent = self._get_intelligent_assistant()
 
                     success = execute_jarvis_command(
                         command, 
@@ -759,10 +752,7 @@ class MainWindow:
                                 self.overlay.update_text(f"Command: {response}")
                             
                             # Execute the new command
-                            intelligent = None
-                            if hasattr(self, 'has_byte_smart') and self.has_byte_smart:
-                                from src.core.intelligent_assistant import IntelligentAssistant
-                                intelligent = IntelligentAssistant(self.voice_processor, self.nlp_processor)
+                            intelligent = self._get_intelligent_assistant()
 
                             success = execute_jarvis_command(
                                 response, 
@@ -875,14 +865,36 @@ class MainWindow:
         """Log a message to the output area."""
         self.logger.info(message)
     
+    def _get_intelligent_assistant(self):
+        """Lazily create (once) the assistant used for follow-up questions."""
+        if getattr(self, '_intelligent', None) is None:
+            try:
+                from ..core.intelligent_assistant import IntelligentAssistant
+                self._intelligent = IntelligentAssistant(self.voice_processor, self.nlp_processor)
+            except Exception as e:
+                self.logger.warning(f"Intelligent assistant unavailable: {e}")
+                self._intelligent = None
+        return self._intelligent
+
+    def _on_tk_thread(self, func, *args) -> bool:
+        """Re-schedule func on the Tk thread when called from a worker thread."""
+        if threading.current_thread() is threading.main_thread():
+            return False
+        self.root.after(0, lambda: func(*args))
+        return True
+
     def _update_status(self, status: str, color: str = "green"):
         """Update the status display."""
+        if self._on_tk_thread(self._update_status, status, color):
+            return
         self.status_label.config(text=f"Status: {status}")
         self.status_indicator.delete("all")
         self.status_indicator.create_oval(2, 2, 18, 18, fill=color, outline="dark" + color)
     
     def _set_buttons_state(self, enabled: bool):
         """Enable/disable buttons."""
+        if self._on_tk_thread(self._set_buttons_state, enabled):
+            return
         state = tk.NORMAL if enabled else tk.DISABLED
         self.execute_button.config(state=state)
         self.stop_button.config(state=tk.DISABLED if enabled else tk.NORMAL)
@@ -1300,8 +1312,6 @@ class MainWindow:
             
         except Exception as e:
             self._log_message(f"❌ Error playing macro: {str(e)}")
-        ttk.Button(btn_frame, text="🗑️ Delete", command=delete_macro).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Close", command=list_window.destroy).pack(side=tk.RIGHT, padx=5)
 
     def _on_closing(self):
         """Handle window closing."""
@@ -1310,7 +1320,7 @@ class MainWindow:
             self._stop_macro_recording()
 
         if self.is_listening:
-            self._stop_voice_listening()
+            self._stop_jarvis_mode()
 
         # Close any open browser instances
         try:

@@ -8,6 +8,7 @@ Features:
 """
 
 import os
+import sys
 import logging
 from typing import Optional, Callable
 import threading
@@ -116,51 +117,29 @@ class IndianEnglishVoiceProcessor:
             self.recognizer = None
             self.microphone = None
         
-        # Initialize SAPI speaker for Windows (allows interruption)
-        self.sapi_speaker = None
-        try:
-            import sys
-            if sys.platform == "win32":
-                import win32com.client
-                self.sapi_speaker = win32com.client.Dispatch("SAPI.SpVoice")
-                self.sapi_speaker.Rate = 1
-                self.sapi_speaker.Volume = 90
-        except Exception as e:
-            self.logger.warning(f"SAPI initialization failed: {e}")
-
-        # Initialize TTS with queue to prevent "run loop already started" error
+        # Text-to-speech runs on ONE dedicated thread that owns the engine.
+        # COM objects (SAPI) and pyttsx3 engines are bound to the thread that created
+        # them; calling them from the JARVIS/GUI worker threads used to fail silently.
+        # Windows SAPI is preferred because it can be interrupted mid-sentence.
         self.tts_queue = queue.Queue()
         self.tts_thread = None
         self.tts_running = False
-        self.tts_lock = threading.Lock()
-        self.tts_voice_id = None  # Store voice ID for worker thread
+        self.tts_voice_id = None
         self.tts_rate = 160
         self.tts_volume = 0.9
+        self.tts_engine = None          # "sapi" / "pyttsx3" once the worker is ready
+        self.sapi_speaker = None        # kept for backwards compatibility (worker-owned)
+        self._purge_requested = threading.Event()
+        self._speaking = threading.Event()
+        self._tts_ready = threading.Event()
 
-        if HAS_TTS:
-            try:
-                # Create temporary engine to get voice settings
-                temp_engine = pyttsx3.init()
-                voices = temp_engine.getProperty('voices')
-                for voice in voices:
-                    if 'india' in voice.name.lower() or 'hindi' in voice.name.lower():
-                        self.tts_voice_id = voice.id
-                        break
-                temp_engine.stop()
-                del temp_engine
-
-                # Mark that TTS is available
-                self.tts_engine = True  # Just a flag, actual engine created in worker
-
-                # Start TTS worker thread (will create its own engine)
-                self.tts_running = True
-                self.tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
-                self.tts_thread.start()
-            except Exception as e:
-                self.logger.error(f"TTS initialization failed: {e}")
-                self.tts_engine = None
-        else:
-            self.tts_engine = None
+        if sys.platform == "win32" or HAS_TTS:
+            self.tts_running = True
+            self.tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
+            self.tts_thread.start()
+            self._tts_ready.wait(timeout=5)
+            if not self.tts_engine:
+                self.logger.error("No text-to-speech engine available")
         
         # Continuous listening state
         self.listening = False
@@ -202,6 +181,9 @@ class IndianEnglishVoiceProcessor:
             self.logger.error("Speech recognition not available")
             return None
         
+        # Don't open the mic while we're still talking, or we transcribe ourselves
+        self.wait_until_done(timeout=30)
+
         try:
             msg = "🎤 Listening... (speak now, I'll wait for you to finish)"
             self._safe_print(msg)
@@ -213,7 +195,8 @@ class IndianEnglishVoiceProcessor:
                 self._safe_print(msg)
                 if status_callback: status_callback(msg)
                 
-                self.recognizer.adjust_for_ambient_noise(source, duration=1.5)
+                # Short re-calibration per listen; the full calibration ran at startup
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 
                 msg = "🎤 Ready - speak your FULL command..."
                 self._safe_print(msg)
@@ -256,7 +239,7 @@ class IndianEnglishVoiceProcessor:
             return text
             
         except sr.WaitTimeoutError:
-            msg = "⏱️  No speech detected (waited 15 seconds)"
+            msg = f"⏱️  No speech detected (waited {timeout} seconds)"
             self._safe_print(msg)
             if status_callback: status_callback(msg)
             return None
@@ -418,107 +401,120 @@ Return only the enhanced command, nothing else."""
             return text
     
     def stop_speaking(self):
-        """Stop speaking immediately."""
-        if self.sapi_speaker:
-            try:
-                # 2 = SVSFPurgeBeforeSpeak (stops current speech)
-                self.sapi_speaker.Speak("", 2)
-            except Exception as e:
-                self.logger.error(f"Error stopping speech: {e}")
+        """Stop speaking immediately (safe to call from any thread)."""
+        # Drop anything still queued, then ask the worker to purge the current sentence
+        try:
+            while True:
+                self.tts_queue.get_nowait()
+                self.tts_queue.task_done()
+        except queue.Empty:
+            pass
+        if self._speaking.is_set():
+            self._purge_requested.set()
+
+    def is_speaking(self) -> bool:
+        """True while speech is queued or playing."""
+        return self._speaking.is_set() or not self.tts_queue.empty()
+
+    def wait_until_done(self, timeout: float = 30.0):
+        """Block until queued speech has finished (or timeout)."""
+        deadline = time.time() + timeout
+        while self.is_speaking() and time.time() < deadline:
+            time.sleep(0.05)
 
     def speak(self, text: str, async_speech: bool = True):
         """
-        Text-to-speech output using Windows SAPI directly.
+        Text-to-speech output.
 
         Args:
             text: Text to speak
-            async_speech: If True, speaks asynchronously (allows interruption)
+            async_speech: If True, returns immediately (speech can be interrupted
+                          with stop_speaking). If False, blocks until spoken.
         """
-        if not self.tts_engine:
+        if not self.tts_engine or not text:
             return
 
-        try:
-            # Use Windows SAPI directly (more reliable than pyttsx3 threading)
-            if self.sapi_speaker:
-                try:
-                    flags = 1 if async_speech else 0  # 1 = SVSFlagsAsync
-                    self.sapi_speaker.Speak(text, flags)
-                    return
-                except Exception as e:
-                    self.logger.error(f"SAPI speak error: {e}")
-                    # Fallback to pyttsx3
-
-            # Fallback: Use pyttsx3 (may have threading issues)
-            import pyttsx3
-            engine = pyttsx3.init()
-
-            # Apply settings
-            if self.tts_voice_id:
-                try:
-                    engine.setProperty('voice', self.tts_voice_id)
-                except:
-                    pass
-            engine.setProperty('rate', self.tts_rate)
-            engine.setProperty('volume', self.tts_volume)
-
-            # Speak
-            engine.say(text)
-            engine.runAndWait()
-
-            # Cleanup
-            engine.stop()
-            del engine
-
-        except Exception as e:
-            self.logger.error(f"TTS error: {e}")
+        done = threading.Event()
+        self.tts_queue.put((str(text), done))
+        if not async_speech:
+            done.wait(timeout=60)
 
     def _tts_worker(self):
         """
-        TTS worker thread that processes speech queue.
-        This prevents "run loop already started" errors by creating
-        its own pyttsx3 engine in this thread.
+        TTS worker thread: owns the speech engine for its whole life and speaks
+        queued text one item at a time.
         """
-        # Create TTS engine in THIS thread (important!)
-        try:
-            engine = pyttsx3.init()
+        sapi = None
+        engine = None
 
-            # Apply settings
-            if self.tts_voice_id:
-                engine.setProperty('voice', self.tts_voice_id)
-            engine.setProperty('rate', self.tts_rate)
-            engine.setProperty('volume', self.tts_volume)
+        if sys.platform == "win32":
+            try:
+                import pythoncom
+                import win32com.client
+                pythoncom.CoInitialize()
+                sapi = win32com.client.Dispatch("SAPI.SpVoice")
+                sapi.Rate = 1
+                sapi.Volume = 90
+                self.sapi_speaker = sapi
+                self.tts_engine = "sapi"
+            except Exception as e:
+                self.logger.warning(f"SAPI initialization failed, trying pyttsx3: {e}")
+                sapi = None
 
-            self.logger.info("TTS worker engine initialized")
-        except Exception as e:
-            self.logger.error(f"TTS worker engine init failed: {e}")
+        if sapi is None and HAS_TTS:
+            try:
+                engine = pyttsx3.init()
+                for voice in engine.getProperty('voices'):
+                    if 'india' in voice.name.lower() or 'hindi' in voice.name.lower():
+                        self.tts_voice_id = voice.id
+                        engine.setProperty('voice', voice.id)
+                        break
+                engine.setProperty('rate', self.tts_rate)
+                engine.setProperty('volume', self.tts_volume)
+                self.tts_engine = "pyttsx3"
+            except Exception as e:
+                self.logger.error(f"TTS initialization failed: {e}")
+                engine = None
+
+        self._tts_ready.set()
+        if sapi is None and engine is None:
             return
+        self.logger.info(f"TTS worker ready ({self.tts_engine})")
 
-        # Process queue
         while self.tts_running:
             try:
-                # Get text from queue (wait up to 1 second)
-                text = self.tts_queue.get(timeout=1)
+                text, done = self.tts_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-                # Speak using the engine
-                try:
+            self._purge_requested.clear()
+            self._speaking.set()
+            try:
+                if sapi is not None:
+                    sapi.Speak(text, 1)  # 1 = SVSFlagsAsync, so we can poll for purge
+                    while not sapi.WaitUntilDone(50):
+                        if self._purge_requested.is_set() or not self.tts_running:
+                            sapi.Speak("", 2)  # 2 = SVSFPurgeBeforeSpeak: stop now
+                            break
+                else:
                     engine.say(text)
                     engine.runAndWait()
-                except Exception as e:
-                    self.logger.error(f"TTS speak error: {e}")
-
-                self.tts_queue.task_done()
-            except queue.Empty:
-                # No text to speak, continue waiting
-                continue
             except Exception as e:
-                self.logger.error(f"TTS worker error: {e}")
+                self.logger.error(f"TTS speak error: {e}")
+            finally:
+                self._speaking.clear()
+                done.set()
+                self.tts_queue.task_done()
 
-        # Cleanup
         try:
-            engine.stop()
-        except:
+            if engine is not None:
+                engine.stop()
+            if sapi is not None:
+                import pythoncom
+                pythoncom.CoUninitialize()
+        except Exception:
             pass
-    
+
     def calibrate_microphone(self):
         """Recalibrate microphone for ambient noise."""
         if not self.microphone or not self.recognizer:
@@ -532,8 +528,18 @@ Return only the enhanced command, nothing else."""
         except Exception as e:
             self.logger.error(f"Calibration error: {e}")
 
+    def listen(self, timeout: int = 10, phrase_time_limit: int = 15) -> Optional[str]:
+        """Compatibility alias used by SmartAppOpener and older callers."""
+        return self.listen_once(timeout=timeout, phrase_time_limit=phrase_time_limit)
+
+    def stop_continuous_listening(self):
+        """This processor listens on demand only; kept so callers can stop it uniformly."""
+        self.listening = False
+
     def cleanup(self):
         """Cleanup resources."""
+        self.stop_speaking()
+
         # Stop TTS worker
         self.tts_running = False
         if self.tts_thread:
@@ -542,4 +548,3 @@ Return only the enhanced command, nothing else."""
         # Stop listening
         if self.listening:
             self.stop_continuous_listening()
-
