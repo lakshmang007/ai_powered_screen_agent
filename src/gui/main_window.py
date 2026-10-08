@@ -556,245 +556,82 @@ class MainWindow:
             self._stop_jarvis_mode()
 
     def _start_jarvis_mode(self):
-        """Start JARVIS conversational mode."""
+        """Start JARVIS conversational mode (HUD + shared JarvisSession loop)."""
         try:
             self.is_listening = True
             self.byte_smart_mode = True  # Reusing this flag for JARVIS
-            
-            print(f"DEBUG: smart_opener available? {self.has_smart_opener}")
-            if self.has_smart_opener:
-                print(f"DEBUG: smart_opener instance: {self.smart_opener}")
-            else:
-                print("DEBUG: smart_opener is None")
 
-            # Update UI
             self.voice_button.config(text="🔴 Stop JARVIS")
             self._update_status("JARVIS Active", "blue")
 
-            # Show Overlay
+            # HUD: its STOP button interrupts speech / the current task;
+            # the "Stop JARVIS" button in this window ends the session
             if not self.overlay:
-                self.overlay = JarvisOverlay(master=self.root, on_interrupt=self._stop_jarvis_mode)
-                self.overlay.update_status("JARVIS Active", "#00FFFF")
+                self.overlay = JarvisOverlay(master=self.root, on_interrupt=self._interrupt_jarvis)
 
-            import random
-            import sys
-            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            from jarvis import JarvisPersonality
-
-            # Initial greeting
-            greeting = random.choice(JarvisPersonality.GREETINGS)
-            self._log_message(f"🤖 JARVIS: {greeting}")
-            self.voice_processor.speak(greeting)
-            
-            # Start JARVIS loop in separate thread
-            threading.Thread(
-                target=self._jarvis_loop,
-                daemon=True
-            ).start()
+            threading.Thread(target=self._jarvis_loop, daemon=True).start()
 
         except Exception as e:
             self._log_message(f"❌ Error starting JARVIS: {str(e)}")
             self.is_listening = False
             self.voice_button.config(text="🎤 JARVIS")
 
+    def _interrupt_jarvis(self):
+        session = getattr(self, '_jarvis_session', None)
+        if session:
+            session.interrupt()
+            self._log_message("⏹ Interrupted")
+
     def _stop_jarvis_mode(self):
         """Stop JARVIS mode."""
         try:
+            was_active = self.byte_smart_mode
             self.is_listening = False
             self.byte_smart_mode = False
 
-            # Update UI
             self.voice_button.config(text="🎤 JARVIS")
             self._update_status("Ready", "green")
             self._log_message("😴 JARVIS stopped")
 
-            # Close Overlay
             if self.overlay:
                 self.overlay.close()
                 self.overlay = None
 
-            # Say goodbye
-            self.voice_processor.speak("Goodbye, Lucky!")
+            if was_active and getattr(self, '_jarvis_session', None):
+                self.voice_processor.stop_speaking()
+                from ..core import jarvis_persona
+                self.voice_processor.speak(jarvis_persona.standby())
 
         except Exception as e:
             self._log_message(f"❌ Error stopping JARVIS: {str(e)}")
-    
+
     def _jarvis_loop(self):
-        """Main JARVIS conversation loop (runs in separate thread)."""
-        import random
-        import time
+        """Run the shared JARVIS conversation loop (in a worker thread)."""
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from jarvis import JarvisPersonality, execute_jarvis_command, is_wake_word, is_sleep_command, is_exit_command, is_positive_response, is_negative_response
+        from jarvis import JarvisSession
 
-        task_count = 0
-
+        overlay = self.overlay
+        session = JarvisSession(
+            self.voice_processor, self.nlp_processor, self.task_engine,
+            intelligent=self._get_intelligent_assistant(),
+            context=self.context_memory if self.has_context_memory else None,
+            smart_opener=self.smart_opener if self.has_smart_opener else None,
+            ui=overlay,
+            should_run=lambda: self.byte_smart_mode and self.is_listening,
+            log=lambda msg: self.root.after(0, lambda m=msg: self._log_message(m)),
+        )
+        self._jarvis_session = session
         try:
-            while self.byte_smart_mode and self.is_listening:
-                # Log listening status
-                self.root.after(0, lambda: self._log_message("🎤 Listening... (say 'JARVIS' to start)"))
-                if self.overlay:
-                    self.overlay.update_status("Listening...", "#00FF00")
-                    self.overlay.update_text("Say 'JARVIS' to start...")
-
-                # Listen for wake word or command
-                command = self._listen_for_byte_input()
-
-                if not command or not self.byte_smart_mode:
-                    continue
-
-                cmd_lower = command.lower().strip()
-
-                # Check for exit
-                if is_exit_command(cmd_lower):
-                    self.root.after(0, lambda: self._log_message("🤖 JARVIS: Goodbye, Lucky!"))
-                    self.voice_processor.speak("Goodbye, Lucky!")
-                    self.root.after(0, self._stop_jarvis_mode)
-                    break
-
-                # Check for sleep
-                if is_sleep_command(cmd_lower):
-                    sleep_msg = random.choice(JarvisPersonality.SLEEP_MESSAGES)
-                    self.root.after(0, lambda msg=sleep_msg: self._log_message(f"😴 JARVIS: {msg}"))
-                    self.voice_processor.speak(sleep_msg)
-                    self.root.after(0, self._stop_jarvis_mode)
-                    break
-
-                # Check for wake word
-                if is_wake_word(cmd_lower):
-                    # Check if there's a command after the wake word
-                    # e.g., "Jarvis open notepad" -> cmd_lower="jarvis open notepad"
-                    # We need to strip the wake word and see if anything remains
-                    
-                    # Strip the wake word wherever it was said ("jarvis open x",
-                    # "open x jarvis"), keeping the original casing for messages
-                    import re
-                    remaining_command = re.sub(r'\b(?:hello|hey|hi|ok)?\s*(?:jarvis|jarves|jar vis)\b[\s,.!?]*',
-                                               ' ', command, flags=re.IGNORECASE).strip(" ,.!?")
-
-                    if remaining_command:
-                        # User said "Jarvis [command]", so execute immediately
-                        command = remaining_command
-                        cmd_lower = command.lower()
-                        self._log_message(f"⚡ Fast command detected: {command}")
-                    else:
-                        # User just said "Jarvis", so greet and wait
-                        greeting = random.choice(JarvisPersonality.GREETINGS)
-                        self.root.after(0, lambda msg=greeting: self._log_message(f"🤖 JARVIS: {msg}"))
-                        self.voice_processor.speak(greeting)
-
-                        if self.overlay:
-                            self.overlay.update_status("Listening for command...", "#00FFFF")
-                            self.overlay.update_text(greeting)
-
-                        # Listen for actual command
-                        self.root.after(0, lambda: self._log_message("🎤 Listening for your command..."))
-                        command = self._listen_for_byte_input()
-
-                        if not command or not self.byte_smart_mode:
-                            continue
-
-                        cmd_lower = command.lower().strip()
-
-                # Execute command if not sleep/exit
-                if not is_sleep_command(cmd_lower) and not is_exit_command(cmd_lower):
-                    # Execute command using JARVIS logic
-                    self.root.after(0, lambda msg=command: self._log_message(f"📝 Command: {msg}"))
-                    
-                    if self.overlay:
-                        self.overlay.update_status("Processing...", "#FFA500")
-                        self.overlay.update_text(f"Command: {command}")
-                    
-                    intelligent = self._get_intelligent_assistant()
-
-                    success = execute_jarvis_command(
-                        command, 
-                        self.nlp_processor, 
-                        self.task_engine, 
-                        self.voice_processor, 
-                        intelligent, 
-                        self.context_memory if self.has_context_memory else None, 
-                        self.smart_opener if self.has_smart_opener else None
-                    )
-
-                    if success:
-                        self.root.after(0, lambda: self._log_message("✅ Task completed successfully"))
-                        if self.overlay:
-                            self.overlay.update_status("Success", "#00FF00")
-                    else:
-                        self.root.after(0, lambda: self._log_message("❌ Task failed"))
-                        if self.overlay:
-                            self.overlay.update_status("Failed", "#FF0000")
-
-                    # Wait for execution
-                    time.sleep(1)
-
-                    # Ask for feedback
-                    feedback_q = random.choice(JarvisPersonality.FEEDBACK_QUESTIONS)
-                    self.root.after(0, lambda msg=feedback_q: self._log_message(f"🤖 JARVIS: {msg}"))
-                    self.voice_processor.speak(feedback_q)
-
-                    if self.overlay:
-                        self.overlay.update_status("Waiting for response...", "#00FFFF")
-                        self.overlay.update_text(feedback_q)
-
-                    # Listen for response
-                    self.root.after(0, lambda: self._log_message("🎤 Listening for response..."))
-                    response = self._listen_for_byte_input(timeout=15)
-
-                    if response:
-                        resp_lower = response.lower().strip()
-
-                        if is_sleep_command(resp_lower) or is_negative_response(resp_lower):
-                            sleep_msg = random.choice(JarvisPersonality.SLEEP_MESSAGES)
-                            self.root.after(0, lambda msg=sleep_msg: self._log_message(f"😴 JARVIS: {msg}"))
-                            self.voice_processor.speak(sleep_msg)
-                            self.root.after(0, self._stop_jarvis_mode)
-                            break
-                        elif is_wake_word(resp_lower) or is_positive_response(resp_lower):
-                            # Continue loop for new command
-                            self.root.after(0, lambda: self._log_message("🤖 JARVIS: Standing by."))
-                            continue
-                        else:
-                            # User said a new command directly - execute it!
-                            self.root.after(0, lambda msg=response: self._log_message(f"📝 New command: {msg}"))
-                            
-                            if self.overlay:
-                                self.overlay.update_status("Processing...", "#FFA500")
-                                self.overlay.update_text(f"Command: {response}")
-                            
-                            # Execute the new command
-                            intelligent = self._get_intelligent_assistant()
-
-                            success = execute_jarvis_command(
-                                response, 
-                                self.nlp_processor, 
-                                self.task_engine, 
-                                self.voice_processor, 
-                                intelligent, 
-                                self.context_memory if self.has_context_memory else None, 
-                                self.smart_opener if self.has_smart_opener else None
-                            )
-
-                            if success:
-                                self.root.after(0, lambda: self._log_message("✅ Task completed successfully"))
-                                if self.overlay:
-                                    self.overlay.update_status("Success", "#00FF00")
-                            else:
-                                self.root.after(0, lambda: self._log_message("❌ Task failed"))
-                                if self.overlay:
-                                    self.overlay.update_status("Failed", "#FF0000")
-                            
-                            # Wait a bit before continuing
-                            time.sleep(1)
-                            # Loop back to ask for feedback again
-                            continue
-
-                    task_count += 1
-
+            session.run()
         except Exception as e:
             self.root.after(0, lambda err=str(e): self._log_message(f"❌ Error in JARVIS loop: {err}"))
-            self.root.after(0, self._stop_jarvis_mode)
+        finally:
+            self._jarvis_session = None
+            if self.byte_smart_mode:
+                # The session ended itself ("goodbye JARVIS")
+                self.byte_smart_mode = False
+                self.root.after(0, self._stop_jarvis_mode)
 
     def _listen_for_byte_input(self, timeout=30):
         """Listen for voice input (blocking)."""

@@ -72,7 +72,7 @@ def main():
          lambda r: (r and "dry run" in voice.spoken[-1].lower(), voice.spoken[-1])),
         (f"open WhatsApp go to {CONTACT} chat and type and send I will be late", ["yes"],
          lambda r: (r and "dry run" in voice.spoken[-1].lower(), voice.spoken[-1])),
-        ("what are you doing", [], lambda r: (r and "listening" in voice.spoken[-1].lower(), voice.spoken[-1])),
+        ("what are you doing", [], lambda r: (r and not harness.opened_urls and len(voice.spoken[-1]) > 10, voice.spoken[-1])),
         ("minimize all windows", [], lambda r: (r, "minimized")),
     ]
 

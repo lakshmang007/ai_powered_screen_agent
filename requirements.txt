@@ -36,6 +36,7 @@ requests>=2.31.0
 pygetwindow>=0.0.9
 psutil>=5.9.0
 pywin32>=306; sys_platform == "win32"   # SAPI text-to-speech, COM automation
+edge-tts>=6.1           # JARVIS British neural voice (en-GB-RyanNeural)
 
 # Tests
 pytest>=7.0

@@ -210,7 +210,7 @@ class IndianEnglishVoiceProcessor:
                 self._safe_print(msg)
                 if status_callback: status_callback(msg)
                 
-                self._safe_print("   💡 Tip: Speak naturally, I'll wait 2 seconds of silence before stopping")
+                self._safe_print("   💡 Tip: speak naturally; a short pause ends your command")
 
                 # Listen with VERY extended timeout
                 audio = self.recognizer.listen(
@@ -564,11 +564,30 @@ Return only the enhanced command, nothing else."""
                 sapi = win32com.client.Dispatch("SAPI.SpVoice")
                 sapi.Rate = 1
                 sapi.Volume = 90
+                # JARVIS is British: prefer an en-GB voice for the offline fallback
+                voices = sapi.GetVoices()
+                for i in range(voices.Count):
+                    if "Great Britain" in voices.Item(i).GetDescription() or "en-GB" in voices.Item(i).GetDescription():
+                        sapi.Voice = voices.Item(i)
+                        break
                 self.sapi_speaker = sapi
                 self.tts_engine = "sapi"
             except Exception as e:
                 self.logger.warning(f"SAPI initialization failed, trying pyttsx3: {e}")
                 sapi = None
+
+        # Neural British voice (online); SAPI stays as the offline fallback
+        neural = None
+        if os.getenv("TTS_ENGINE", "neural").strip().lower() == "neural" and sys.platform == "win32":
+            try:
+                from .neural_tts import NeuralVoice, HAS_EDGE_TTS, prune_cache
+                if HAS_EDGE_TTS:
+                    neural = NeuralVoice()
+                    prune_cache()
+                    self.tts_engine = "neural"
+            except Exception as e:
+                self.logger.warning(f"Neural voice unavailable: {e}")
+                neural = None
 
         if sapi is None and HAS_TTS:
             try:
@@ -586,9 +605,12 @@ Return only the enhanced command, nothing else."""
                 engine = None
 
         self._tts_ready.set()
-        if sapi is None and engine is None:
+        if sapi is None and engine is None and neural is None:
             return
         self.logger.info(f"TTS worker ready ({self.tts_engine})")
+
+        def should_stop():
+            return self._purge_requested.is_set() or not self.tts_running
 
         while self.tts_running:
             try:
@@ -599,7 +621,9 @@ Return only the enhanced command, nothing else."""
             self._purge_requested.clear()
             self._speaking.set()
             try:
-                if sapi is not None:
+                if neural is not None and neural.speak(text, should_stop):
+                    pass  # spoken (or interrupted) with the neural voice
+                elif sapi is not None:
                     sapi.Speak(text, 1)  # 1 = SVSFlagsAsync, so we can poll for purge
                     while not sapi.WaitUntilDone(50):
                         if self._purge_requested.is_set() or not self.tts_running:

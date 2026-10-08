@@ -114,51 +114,41 @@ class ContextMemory:
 
 
 class JarvisPersonality:
-    """JARVIS personality and responses."""
-    
-    GREETINGS = [
-        "Good to see you, Lucky. How may I be of assistance?",
-        "At your service, Lucky. What can I do for you?",
-        "Hello, Lucky. I'm here to help.",
-        "Yes, Lucky. What do you need?",
-        "Ready and waiting, Lucky."
-    ]
-    
-    ACKNOWLEDGMENTS = [
-        "Right away, Lucky.",
-        "Certainly, Lucky.",
-        "Of course, Lucky.",
-        "On it, Lucky.",
-        "Consider it done, Lucky."
-    ]
-    
-    SUCCESS = [
-        "Task completed, Lucky.",
-        "Done, Lucky.",
-        "All finished, Lucky.",
-        "Mission accomplished, Lucky.",
-        "Successfully executed, Lucky."
-    ]
-    
-    FEEDBACK_QUESTIONS = [
-        "Anything else, Lucky?",
-        "What's next on the agenda?",
-        "Shall we continue?",
-        "Any other protocols to run?",
-        "Standing by for further instructions."
-    ]
-    
-    SLEEP_MESSAGES = [
-        "Going into sleep mode, Lucky. Say 'JARVIS' to wake me.",
-        "Powering down non-essential systems.",
-        "Standing by in low power mode.",
-        "I'll be here if you need me, Lucky.",
-        "Resting now."
-    ]
-    
+    """Stock lines (film-style). Contextual lines live in src/core/jarvis_persona.py.
+    "Lucky" is replaced at speak time with JARVIS_ADDRESS (default "sir")."""
+
+    GREETINGS = ["At your service, Lucky.", "Yes, Lucky?", "How may I assist, Lucky?"]
+    ACKNOWLEDGMENTS = ["Right away, Lucky.", "Of course.", "As you wish."]
+    SUCCESS = ["Done, Lucky.", "Taken care of.", "All set, Lucky."]
+    FEEDBACK_QUESTIONS = ["Will there be anything else, Lucky?"]
+    SLEEP_MESSAGES = ["Very well, Lucky. I'll be here.", "Standing by, Lucky."]
+
     @staticmethod
     def random_choice(messages):
         return random.choice(messages)
+
+
+class PersonaVoice:
+    """Wraps the voice processor: swaps the legacy "Lucky" for JARVIS_ADDRESS and
+    reports everything JARVIS says to a callback (HUD / log)."""
+
+    def __init__(self, voice, on_speak=None):
+        self._voice = voice
+        self._on_speak = on_speak
+
+    def speak(self, text, async_speech=True):
+        from src.core import jarvis_persona as persona
+        text = re.sub(r"\bLucky\b", persona.address(), str(text))
+        print(f"🤖 JARVIS: {text}")
+        if self._on_speak:
+            try:
+                self._on_speak(text)
+            except Exception:
+                pass
+        return self._voice.speak(text, async_speech=async_speech)
+
+    def __getattr__(self, name):
+        return getattr(self._voice, name)
 
 
 def print_box(text, char="="):
@@ -346,144 +336,209 @@ def run_jarvis(voice, nlp, engine, intelligent, context, smart_opener, interrupt
     state["running"] = False
 
 
-def _jarvis_logic(voice, nlp, engine, intelligent, context, smart_opener, overlay, state):
-    """Main JARVIS interaction loop logic."""
-    
-    print_box("🤖 JARVIS is Active!", "-")
-    overlay.update_status("Active", "#00FF00")
-    overlay.update_text("I am JARVIS. How can I help you?")
-    
-    # Initial greeting
-    greeting = JarvisPersonality.random_choice(JarvisPersonality.GREETINGS)
-    print(f"🤖 JARVIS: {greeting}\n")
-    voice.speak(greeting)
-    
-    is_awake = True
-    task_count = 0
-    
-    try:
-        while state["running"]:
-            print("-" * 70)
-            
-            # Check for interruption
-            if state["interrupted"]:
-                state["interrupted"] = False
-                state["interrupt_event"].clear() # Reset interrupt signal
-                voice.stop_speaking()
-                overlay.update_status("Interrupted", "#FF4444")
-                overlay.update_text("Ready for new command...")
-                time.sleep(0.5)
-                # Continue loop to listen again
-            
-            if is_awake:
-                # Awake mode
-                print("🎤 Listening... (say 'JARVIS' for new task, or give command)")
-                overlay.update_status("Listening...", "#00FFFF")
-                
-                command = listen_for_input(voice)
-                
-                if not command:
-                    continue
-                
-                overlay.update_text(f"You said: {command}")
-                cmd_lower = command.lower().strip()
-                
-                # Check for sleep
-                if is_sleep_command(cmd_lower):
-                    is_awake = False
-                    sleep_msg = JarvisPersonality.random_choice(JarvisPersonality.SLEEP_MESSAGES)
-                    print(f"\n😴 JARVIS: {sleep_msg}\n")
-                    overlay.update_status("Sleeping", "#888888")
-                    overlay.update_text(sleep_msg)
-                    voice.speak(sleep_msg)
-                    continue
-                
-                # Check for exit
-                if is_exit_command(cmd_lower):
-                    print("\n🤖 JARVIS: Goodbye, Lucky!\n")
-                    overlay.update_status("Goodbye", "#FF0000")
-                    voice.speak("Goodbye, Lucky!")
-                    break
-                
-                # Check for wake word
-                if is_wake_word(cmd_lower):
-                    greeting = JarvisPersonality.random_choice(JarvisPersonality.GREETINGS)
-                    print(f"\n🤖 JARVIS: {greeting}\n")
-                    overlay.update_text(greeting)
-                    voice.speak(greeting)
-                    
-                    # Listen for command
-                    print("🎤 Listening for your command...")
-                    overlay.update_status("Listening for command...", "#00FFFF")
-                    command = listen_for_input(voice)
-                    if not command:
-                        continue
-                    overlay.update_text(f"Command: {command}")
-                    cmd_lower = command.lower().strip()
-                
-                # Execute with intelligence
-                if not is_sleep_command(cmd_lower) and not is_exit_command(cmd_lower):
-                    overlay.update_status("Processing...", "#FFFF00")
-                    success = execute_jarvis_command(command, nlp, engine, voice, intelligent, context, smart_opener)
-                    if success:
-                        task_count += 1
-                    
-                    # Ask for feedback
-                    time.sleep(0.5)
-                    feedback_q = JarvisPersonality.random_choice(JarvisPersonality.FEEDBACK_QUESTIONS)
-                    print(f"\n🤖 JARVIS: {feedback_q}\n")
-                    overlay.update_text(feedback_q)
-                    voice.speak(feedback_q)
-                    
-                    # Listen for response
-                    print("🎤 Listening for response...")
-                    overlay.update_status("Listening for response...", "#00FFFF")
-                    response = listen_for_input(voice, timeout=15)
-                    
-                    if response:
-                        overlay.update_text(f"Response: {response}")
-                        resp_lower = response.lower().strip()
-                        
-                        if is_sleep_command(resp_lower) or is_negative_response(resp_lower):
-                            is_awake = False
-                            sleep_msg = JarvisPersonality.random_choice(JarvisPersonality.SLEEP_MESSAGES)
-                            print(f"\n😴 JARVIS: {sleep_msg}\n")
-                            overlay.update_status("Sleeping", "#888888")
-                            overlay.update_text(sleep_msg)
-                            voice.speak(sleep_msg)
-                        elif is_positive_response(resp_lower):
-                            print("\n🤖 JARVIS: Very well. What is the next task?\n")
-                            overlay.update_text("Ready for next task")
-                            voice.speak("Very well. What is the next task?")
-                        else:
-                            # Treat as new command
-                            execute_jarvis_command(response, nlp, engine, voice, intelligent, context, smart_opener)
-                            task_count += 1
-                    else:
-                        # No response - go to sleep
-                        is_awake = False
-                        sleep_msg = JarvisPersonality.random_choice(JarvisPersonality.SLEEP_MESSAGES)
-                        print(f"\n😴 JARVIS: {sleep_msg}\n")
-                        overlay.update_status("Sleeping", "#888888")
-                        voice.speak(sleep_msg)
-            
+class JarvisSession:
+    """The conversation loop, shared by the GUI and `main.py --voice`.
+
+    Behaves like JARVIS in the films:
+    - Greets once, then stays *engaged* for follow-ups (no wake word needed) for
+      FOLLOWUP_SECONDS after the last exchange.
+    - When not engaged it only reacts to speech addressed to it ("JARVIS, ..."),
+      so conversations in the room are ignored.
+    - No "Anything else?" after every task; it confirms briefly and keeps listening.
+    - "stop" / "cancel" interrupts, "that's all" / "go to sleep" stands by,
+      "goodbye JARVIS" ends the session.
+    """
+
+    FOLLOWUP_SECONDS = float(os.getenv("JARVIS_FOLLOWUP_SECONDS", "20"))
+    _STOP = re.compile(r"^(stop|cancel|never ?mind|quiet|shut up|enough|that's enough|forget it|abort)( it| that| please| jarvis)*$")
+    _STANDBY = re.compile(r"^((that'?s|that is) (all|it)|go to sleep|sleep|stand ?by|no thanks?|nothing|"
+                          r"thank you,? that'?s all|thanks,? that'?s all|i'?m done|we'?re done)( for now)?( jarvis)?$")
+    # Matched after the wake word is stripped, so "goodbye jarvis" arrives as "goodbye"
+    _EXIT = re.compile(r"^(goodbye|good ?bye|bye|bye bye|good ?night)( for now| jarvis)?$|"
+                       r"^(shut ?down|power down|deactivate|exit|quit)( jarvis| yourself)?$")
+    _WAKE = re.compile(r"\b(?:hey |ok |okay |hello |hi )?(jarvis|jarves|jar vis|travis)\b[\s,.!?]*", re.IGNORECASE)
+
+    def __init__(self, voice, nlp, engine, intelligent=None, context=None, smart_opener=None,
+                 ui=None, should_run=lambda: True, interrupt_event=None, log=print):
+        from src.core import jarvis_persona as persona
+        self.persona = persona
+        self.ui = ui
+        self.log = log
+        self.voice = PersonaVoice(voice, on_speak=self._on_speak)
+        self.nlp, self.engine, self.intelligent = nlp, engine, intelligent
+        self.context = context or ContextMemory()
+        self.smart_opener = smart_opener
+        self.should_run = should_run
+        self.interrupt_event = interrupt_event or threading.Event()
+        self.engaged_until = 0.0
+        self.tasks_done = 0
+
+    # ---------------------------------------------------------------- UI helpers
+    def _on_speak(self, text):
+        if self.ui:
+            self.ui.update_text(text)
+            self.ui.set_mode("speaking", "Speaking")
+
+    def _mode(self, mode, status):
+        if self.ui:
+            self.ui.set_mode(mode, status)
+
+    @property
+    def engaged(self):
+        return time.time() < self.engaged_until
+
+    def _engage(self):
+        self.engaged_until = time.time() + self.FOLLOWUP_SECONDS
+
+    def interrupt(self):
+        """STOP button: cut speech off and abort long-running handlers."""
+        self.interrupt_event.set()
+        self.voice.stop_speaking()
+        self._mode("idle", "Interrupted")
+
+    # ---------------------------------------------------------------- loop
+    def split_wake_word(self, text):
+        """Return (addressed_to_jarvis, command_without_wake_word)."""
+        addressed = bool(self._WAKE.search(text))
+        command = self._WAKE.sub(" ", text).strip(" ,.!?") if addressed else text.strip()
+        return addressed, command
+
+    def run(self):
+        print_box("🤖 JARVIS is Active!", "-")
+        self.voice.speak(self.persona.greeting())
+        self._engage()
+
+        while self.should_run():
+            if self.interrupt_event.is_set():
+                self.interrupt_event.clear()
+
+            self._wait_for_speech()
+            engaged = self.engaged
+            if engaged:
+                self._mode("listening", "Listening...")
+                timeout = max(3, int(self.engaged_until - time.time()))
             else:
-                # Sleep mode
-                print("😴 Sleeping... Say 'JARVIS' to wake me up")
-                overlay.update_status("Sleeping (Say 'JARVIS')", "#555555")
-                command = listen_for_input(voice, timeout=60)
-                
-                if command and is_wake_word(command.lower()):
-                    is_awake = True
-                    greeting = JarvisPersonality.random_choice(JarvisPersonality.GREETINGS)
-                    print(f"\n🤖 JARVIS: {greeting}\n")
-                    overlay.update_status("Waking up...", "#00FF00")
-                    voice.speak(greeting)
-    
-    except KeyboardInterrupt:
-        print(f"\n\n🤖 JARVIS: Completed {task_count} tasks. Goodbye, Lucky!\n")
-        voice.speak("Goodbye, Lucky!")
-        voice.cleanup()
+                self._mode("idle", "Standing by. Say \"JARVIS\".")
+                timeout = 30
+
+            heard = listen_for_input(self.voice, timeout=timeout)
+            if not self.should_run():
+                break
+            if not heard:
+                continue
+
+            addressed, command = self.split_wake_word(heard)
+            if not engaged and not addressed:
+                self.log(f"(ignored, not addressed to JARVIS: {heard!r})")
+                continue
+            if self.ui:
+                self.ui.show_user(heard)
+            if not command:
+                self.voice.speak(self.persona.wake())
+                self._engage()
+                continue
+
+            if not self.handle(command):
+                break
+
+        self._mode("idle", "Offline")
+
+    def handle(self, command):
+        """Run one utterance. Returns False when the session should end."""
+        lower = re.sub(r"[^a-z' ,]", "", command.lower()).strip(" ,")
+        if self._EXIT.match(lower):
+            self.voice.speak(self.persona.goodbye(), async_speech=False)
+            return False
+        if self._STOP.match(lower):
+            self.voice.stop_speaking()
+            self.voice.speak(self.persona.stopped())
+            self.engaged_until = 0
+            return True
+        if self._STANDBY.match(lower):
+            self.voice.speak(self.persona.standby())
+            self.engaged_until = 0
+            return True
+
+        self._mode("thinking", "Working on it...")
+        self.log(f"📝 Command: {command}")
+        ok = execute_jarvis_command(command, self.nlp, self.engine, self.voice, self.intelligent,
+                                    self.context, self.smart_opener)
+        self.tasks_done += bool(ok)
+        self._wait_for_speech()
+        self._mode("success" if ok else "error", "Done" if ok else "That didn't work")
+        self._engage()
+        return True
+
+    def _wait_for_speech(self):
+        """Let JARVIS finish talking before the HUD switches state (the mic waits too)."""
+        if hasattr(self.voice, "wait_until_done"):
+            self.voice.wait_until_done(30)
+
+
+def _jarvis_logic(voice, nlp, engine, intelligent, context, smart_opener, overlay, state):
+    """Backwards-compatible entry point used by run_jarvis()."""
+    session = JarvisSession(voice, nlp, engine, intelligent, context, smart_opener, ui=overlay,
+                            should_run=lambda: state["running"], interrupt_event=state["interrupt_event"])
+    state["session"] = session
+    session.run()
+
+
+_brain = None
+
+
+def get_brain():
+    """JARVIS's conversational brain (created once, keeps conversation memory)."""
+    global _brain
+    if _brain is None:
+        from src.core.jarvis_brain import JarvisBrain
+        _brain = JarvisBrain()
+    return _brain
+
+
+# Desktop actions JARVIS should perform rather than talk about
+_ACTIONS = {"open", "close", "click", "type", "press", "send", "post", "create", "navigate", "scroll",
+            "wait", "erase", "clear", "select", "delete", "minimize", "play", "multi_step",
+            "erase_and_type", "shutdown"}
+_QUESTION_START = re.compile(r"^(what|what's|whats|who|who's|why|how|when|where|which|is|are|was|were|do|does|did|"
+                             r"can|could|would|should|will|tell me|explain|define|calculate|give me)\b", re.IGNORECASE)
+_EXPLICIT_SEARCH = re.compile(r"^(search|google|look\s+up|find|search\s+for)\b", re.IGNORECASE)
+
+
+def _is_conversational(text, action):
+    """Chat/questions go to the brain; explicit desktop actions don't."""
+    if action in ("chat", "unknown"):
+        return True
+    if action == "search":
+        return not _EXPLICIT_SEARCH.match(text.strip())
+    # "can you open whatsapp" is an action; "what's the time" is a question
+    return action not in _ACTIONS and bool(_QUESTION_START.match(text.strip()))
+
+
+def _converse(command_text, parsed, voice, context):
+    """Answer in character; fall back to a web search for live information."""
+    brain = get_brain()
+    if not brain.available:
+        reply = parsed.target if parsed.action.value == "chat" and parsed.target else None
+        if reply:
+            voice.speak(reply)
+            return True
+        if parsed.action.value == "search":
+            query = parsed.parameters.get("query") or parsed.target or command_text
+            return execute_search_action({"query": query, "engine": "google", "browser": None}, voice)
+        from src.core import jarvis_persona as persona
+        voice.speak(persona.didnt_catch())
+        return False
+
+    recent = "; ".join(f"{h['action']} {h['details']}" for h in context.history[-3:]) if context.history else "none"
+    answer = brain.respond(command_text, recent_actions=recent)
+    if "search" in answer:
+        query = answer["search"].rstrip(".")
+        print(f"[BRAIN] Needs live info -> searching: {query}")
+        voice.speak(f"I'll pull that up for you, Lucky.")
+        return execute_search_action({"query": query, "engine": "google", "browser": None}, voice, quiet=True)
+    print(f"[BRAIN] {answer['reply']}")
+    voice.speak(answer["reply"])
+    return True
 
 
 def listen_for_input(voice, timeout=20):
@@ -501,11 +556,9 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
     import re
     import logging
     print(f"\n[CMD] Command: {command_text}")
-
-    # Acknowledge
-    ack = JarvisPersonality.random_choice(JarvisPersonality.ACKNOWLEDGMENTS)
-    print(f"[JARVIS] JARVIS: {ack}")
-    voice.speak(ack)
+    from src.core import jarvis_persona as persona
+    if not isinstance(voice, PersonaVoice):
+        voice = PersonaVoice(voice)
 
     if context is None:
         context = ContextMemory()
@@ -568,10 +621,18 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
             result = engine.execute_command(parsed)
             print(f"[WHATSAPP] {result.status.value}: {result.message}")
             if result.status.value == 'completed':
-                voice.speak(result.message.replace("'", ""))
+                data = result.data or {}
+                if data.get('message') and not result.message.startswith('Dry run'):
+                    voice.speak(persona.done('send', parsed.target, 'whatsapp', result.message, data))
+                else:
+                    voice.speak(result.message.replace("'", ""))
                 context.add_action('whatsapp', parsed.parameters)
+                get_brain().remember_action(result.message)
                 return True
-            voice.speak(result.message.replace("'", "") if result.status.value != 'cancelled' else "Okay, I won't send it, Lucky.")
+            if result.status.value == 'cancelled':
+                voice.speak("Very well, Lucky. I won't send it.")
+            else:
+                voice.speak(persona.failed(result.message.replace("'", "")))
             return False
 
         # 2. Check for INSTALL command ("install spotify", "please install vlc")
@@ -596,10 +657,7 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 import pyautogui
                 # Use Win+M to minimize all windows
                 pyautogui.hotkey('win', 'm')
-                
-                success_msg = JarvisPersonality.random_choice(JarvisPersonality.SUCCESS)
-                print(f"[SUCCESS] {success_msg}")
-                voice.speak(success_msg)
+                print("[SUCCESS] Minimized all windows")
                 return True
             except Exception as e:
                 print(f"[ERROR] Minimize failed: {e}")
@@ -801,12 +859,15 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
         action_str = parsed.action.value.lower()
         app_str = parsed.application.value.lower()
 
-        # Small talk: answer it instead of acting on it
-        if action_str == "chat":
-            reply = parsed.target or "I'm here, Lucky. What should I do?"
-            print(f"[JARVIS] {reply}")
-            voice.speak(reply)
-            return True
+        # Conversation: small talk, questions and anything that isn't a desktop
+        # action go to JARVIS's brain, which answers in character (or asks for a search)
+        if _is_conversational(command_text, action_str):
+            return _converse(command_text, parsed, voice, context)
+
+        # Say what we're about to do, the way JARVIS would ("Opening WhatsApp, sir.")
+        ack_line = persona.ack(action_str, parsed.target, app_str)
+        if ack_line and action_str not in ("search", "open"):
+            voice.speak(ack_line)
 
         # Handle OPEN commands with smart opener (WhatsApp has its own handler,
         # which can also bring it back from the system tray)
@@ -867,8 +928,8 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
             query = re.sub(r'^(search(\s+for)?|google|look\s+up|find)\s+', '', query, flags=re.IGNORECASE).strip() or query
             engine_name = engine_hint if engine_hint in ("google", "bing", "duckduckgo") else "google"
             print(f"[SEARCH] {engine_name}: {query}")
-            voice.speak(f"Searching for {query}, Lucky.")
-            return execute_search_action({"query": query, "engine": engine_name, "browser": None}, voice)
+            voice.speak(persona.ack("search", query))
+            return execute_search_action({"query": query, "engine": engine_name, "browser": None}, voice, quiet=True)
 
         # Execute normally
         result = engine.execute_command(parsed)
@@ -879,10 +940,12 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
                 context.add_action('type', {'text': parsed.target})
             elif parsed.action.value == 'open':
                 context.add_action('open', {'app': parsed.application.value})
+            get_brain().remember_action(f"{action_str} {parsed.target or app_str}: {result.message}")
 
-            success_msg = JarvisPersonality.random_choice(JarvisPersonality.SUCCESS)
-            print(f"[SUCCESS] {success_msg}")
-            voice.speak(success_msg)
+            print(f"[SUCCESS] {result.message}")
+            done_line = persona.done(action_str, parsed.target, app_str, result.message, result.data)
+            if done_line:
+                voice.speak(done_line)
             return True
         elif result.status.value == 'ambiguous':
             # Handle ambiguity
@@ -904,7 +967,7 @@ def execute_jarvis_command(command_text, nlp, engine, voice, intelligent, contex
         else:
             print(f"[FAILED] Failed: {result.message}")
             # Say why, so the user can rephrase ("Could not find 'xyz' to click")
-            voice.speak(f"Sorry Lucky, {result.message.replace(chr(39), '')}")
+            voice.speak(persona.failed(result.message.replace(chr(39), '')))
             return False
 
     except Exception as e:
@@ -995,8 +1058,8 @@ def execute_intelligent_action(action_details, voice, engine):
     return False
 
 
-def execute_search_action(action_details, voice):
-    """Execute search action."""
+def execute_search_action(action_details, voice, quiet=False):
+    """Execute search action. quiet=True when the caller already announced it."""
     query = action_details.get("query") or ""
     engine_name = action_details.get("engine") or "google"
     browser = action_details.get("browser")
@@ -1014,10 +1077,11 @@ def execute_search_action(action_details, voice):
 
     if open_url(url, browser):
         print(f"✅ Searching {engine_name} for '{query}' in {browser or 'default browser'}")
-        voice.speak("Search initiated, Lucky.")
+        if not quiet:
+            voice.speak(f"Here's what I found for {query}, Lucky.")
         return True
     print("❌ Search failed")
-    voice.speak("Search failed.")
+    voice.speak("I'm afraid I couldn't open the browser, Lucky.")
     return False
 
 

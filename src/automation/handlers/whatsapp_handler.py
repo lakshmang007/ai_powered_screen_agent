@@ -169,7 +169,13 @@ class WhatsAppHandler:
         if not self._search(search_name):
             return TaskResult(TaskStatus.FAILED, f"Couldn't search for {search_name} in WhatsApp")
 
-        hit = self._find_in_results(window, search_name)
+        # Results load asynchronously (slowly right after WhatsApp starts): poll for them
+        hit = None
+        deadline = time.time() + 6
+        while hit is None and time.time() < deadline:
+            hit = self._find_in_results(window, search_name)
+            if hit is None:
+                time.sleep(0.6)
         if dry_run:
             self.screen_agent.press_key("escape")
             if hit:
@@ -185,9 +191,15 @@ class WhatsAppHandler:
             self.screen_agent.press_key("down")
             time.sleep(0.2)
             self.screen_agent.press_key("enter")
-        time.sleep(1.2)
 
-        if not self._chat_is_open_for(window, search_name):
+        # Wait for the chat to open, then verify it's the right one
+        opened = False
+        deadline = time.time() + 5
+        while not opened and time.time() < deadline:
+            time.sleep(0.6)
+            opened = self._chat_is_open_for(window, search_name)
+
+        if not opened:
             self.screen_agent.press_key("escape")
             return TaskResult(TaskStatus.FAILED,
                               f"Couldn't confirm that {search_name}'s chat is open, so I stopped.")
@@ -359,7 +371,7 @@ class WhatsAppHandler:
         self.screen_agent.key_combination("ctrl", "a")
         if not self._paste_text(name):
             return False
-        time.sleep(1.5)  # results load asynchronously
+        time.sleep(0.8)  # first results; open_chat polls for the rest
         return True
 
     def _window_region(self, window) -> Dict[str, int]:

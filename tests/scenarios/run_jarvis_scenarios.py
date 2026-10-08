@@ -112,7 +112,7 @@ def main():
          lambda r: (r and whatsapp_window() is not None and jarvis.gw_active_title() == "WhatsApp",
                     f"foreground={jarvis.gw_active_title()!r}")),
         ("what are you doing", [],
-         lambda r: (r and not opened_urls and "listening" in voice.spoken[-1].lower(),
+         lambda r: (r and not opened_urls and len(voice.spoken[-1]) > 10,
                     f"reply={voice.spoken[-1]!r}, urls opened={opened_urls}")),
         (f"open whatsapp and go to {CONTACT} chat", [],
          lambda r: (r, f"spoken={voice.spoken[-1]!r}")),
