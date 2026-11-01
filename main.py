@@ -149,6 +149,12 @@ Examples:
     )
 
     parser.add_argument(
+        '--train-voice',
+        action='store_true',
+        help='Train speech recognition on your voice (about 3 minutes)'
+    )
+
+    parser.add_argument(
         '--config',
         type=str,
         default='config/config.ini',
@@ -501,7 +507,10 @@ def main():
     
     # Run application
     try:
-        if args.voice:
+        if args.train_voice:
+            from src.gui.voice_trainer import run_voice_training
+            run_voice_training()
+        elif args.voice:
             run_voice_mode(config)
         elif args.cli:
             run_cli_mode(config)

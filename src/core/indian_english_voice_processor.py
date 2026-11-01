@@ -96,8 +96,15 @@ class IndianEnglishVoiceProcessor:
             self.recognizer.dynamic_energy_threshold = True
             self.recognizer.pause_threshold = float(os.getenv("VOICE_PAUSE_SECONDS", "1.2"))
             self.recognizer.phrase_threshold = 0.2  # ignore clicks/pops shorter than this
-            self.recognizer.non_speaking_duration = min(0.8, self.recognizer.pause_threshold)
             self._last_calibration = 0.0
+
+            # Voice training measured this user's mic level and natural pauses
+            trained = getattr(self, "voice_profile", None) or {}
+            if trained.get("energy_threshold"):
+                self.recognizer.energy_threshold = trained["energy_threshold"]
+            if trained.get("pause_threshold") and not os.getenv("VOICE_PAUSE_SECONDS"):
+                self.recognizer.pause_threshold = trained["pause_threshold"]
+            self.recognizer.non_speaking_duration = min(0.8, self.recognizer.pause_threshold)
             
             try:
                 self.microphone = sr.Microphone()
@@ -108,6 +115,7 @@ class IndianEnglishVoiceProcessor:
                     with self.microphone as source:
                         self.logger.info("Calibrating for ambient noise (2 seconds)...")
                         self.recognizer.adjust_for_ambient_noise(source, duration=1)
+                        self._apply_trained_threshold()
                     self._last_calibration = time.time()
                     self.logger.info("Speech recognition initialized for Indian English")
                 except Exception as calib_error:
@@ -204,6 +212,7 @@ class IndianEnglishVoiceProcessor:
                 # dynamic_energy_threshold keeps adapting in between. Saves ~0.5s per command.
                 if time.time() - self._last_calibration > 120:
                     self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                    self._apply_trained_threshold()
                     self._last_calibration = time.time()
                 
                 msg = "🎤 Ready - speak your FULL command..."
@@ -358,6 +367,12 @@ class IndianEnglishVoiceProcessor:
         corrected = text
         for pattern, replacement in corrections.items():
             corrected = re.sub(pattern, replacement, corrected, flags=re.IGNORECASE)
+
+        # Corrections learned from this user's own voice (voice training)
+        learned = (getattr(self, "voice_profile", None) or {}).get("corrections") or {}
+        if learned:
+            from .voice_training import apply_corrections
+            corrected = apply_corrections(corrected, learned)
         
         return corrected
     
@@ -384,16 +399,39 @@ class IndianEnglishVoiceProcessor:
             except Exception as e:
                 self.logger.warning(f"Groq Whisper unavailable ({e}); using Google speech recognition")
                 self.stt_provider = "google"
+        # Personal voice profile from voice training (python main.py --train-voice)
+        try:
+            from .voice_training import load_profile
+            self.voice_profile = load_profile() or {}
+        except Exception:
+            self.voice_profile = {}
+        if self.voice_profile:
+            self.logger.info(f"Loaded voice profile ({len(self.voice_profile.get('corrections', {}))} learned corrections)")
         self._vocabulary_prompt = self._build_vocabulary_prompt()
 
+    def _apply_trained_threshold(self):
+        """After a room-noise calibration, never go below the level voice training
+        measured for this user (keeps soft speech from being cut, ignores hum)."""
+        trained = (getattr(self, "voice_profile", None) or {}).get("energy_threshold")
+        if trained and self.recognizer is not None:
+            self.recognizer.energy_threshold = max(self.recognizer.energy_threshold, trained * 0.8)
+
     @staticmethod
-    def _build_vocabulary_prompt() -> str:
-        """Words Whisper should expect: our wake word, apps, commands, contacts, macros."""
+    def _build_vocabulary_prompt(include_profile: bool = True) -> str:
+        """Words Whisper should expect: our wake word, apps, commands, contacts, macros,
+        and (after voice training) the user's own names and vocabulary."""
         from pathlib import Path
         import json
         root = Path(__file__).resolve().parents[2]
-        words = ["JARVIS", "WhatsApp", "Mohith", "Notepad", "VS Code", "Chrome", "YouTube", "Gmail",
-                 "LinkedIn", "Dolby Access", "Spotify", "macro", "minimize", "Windows key"]
+        words = []
+        if include_profile:
+            try:
+                profile = json.loads((root / "data" / "voice_profile.json").read_text(encoding="utf-8"))
+                words += profile.get("names", []) + profile.get("vocabulary", [])
+            except Exception:
+                pass
+        words += ["JARVIS", "WhatsApp", "Mohith", "Notepad", "VS Code", "Chrome", "YouTube", "Gmail",
+                  "LinkedIn", "Dolby Access", "Spotify", "macro", "minimize", "Windows key"]
         try:
             contacts = json.loads((root / "data" / "whatsapp_contacts.json").read_text(encoding="utf-8"))
             for alias, entry in contacts.items():
@@ -413,7 +451,7 @@ class IndianEnglishVoiceProcessor:
         return ("Voice commands for a desktop assistant called JARVIS, e.g. 'open WhatsApp', "
                 "'send I am coming to Mohith on WhatsApp', 'click type a message'. Words: " + ", ".join(unique[:60]) + ".")
 
-    def _transcribe_with_groq(self, audio) -> Optional[str]:
+    def _transcribe_with_groq(self, audio, prompt: Optional[str] = None) -> Optional[str]:
         """Transcribe with Whisper on Groq (fast, free tier, robust to accents and noise)."""
         if self._groq_stt_client is None:
             return None
@@ -422,7 +460,7 @@ class IndianEnglishVoiceProcessor:
             file=("command.wav", wav),
             model=self.groq_stt_model,
             language="en",
-            prompt=self._vocabulary_prompt,
+            prompt=prompt or self._vocabulary_prompt,
             response_format="verbose_json",
             temperature=0.0,
         )
@@ -657,6 +695,7 @@ Return only the enhanced command, nothing else."""
             print("🔧 Calibrating microphone for ambient noise...")
             with self.microphone as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=2)
+                self._apply_trained_threshold()
             print("✅ Calibration complete!")
         except Exception as e:
             self.logger.error(f"Calibration error: {e}")

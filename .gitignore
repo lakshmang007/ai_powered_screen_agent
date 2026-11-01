@@ -54,3 +54,4 @@ tmp/
 
 # JARVIS voice cache (regenerated automatically)
 data/tts_cache/
+data/voice_samples/

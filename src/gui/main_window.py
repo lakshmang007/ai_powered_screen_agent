@@ -293,11 +293,17 @@ class MainWindow:
         )
 
         # Voice button with Byte Smart support
-        voice_text = "🎤 Byte Smart" if self.has_byte_smart else "🎤 Voice"
+        voice_text = "🎤 JARVIS" if self.has_byte_smart else "🎤 Voice"
         self.voice_button = ttk.Button(
             self.buttons_frame,
             text=voice_text,
             command=self._toggle_voice_listening
+        )
+
+        self.train_voice_button = ttk.Button(
+            self.buttons_frame,
+            text="🎙 Train voice",
+            command=self._open_voice_training
         )
 
         self.clear_button = ttk.Button(
@@ -407,7 +413,8 @@ class MainWindow:
         self.buttons_frame.grid(row=1, column=0, sticky=(tk.W, tk.E))
         self.execute_button.grid(row=0, column=0, padx=(0, 5))
         self.voice_button.grid(row=0, column=1, padx=(0, 5))
-        self.clear_button.grid(row=0, column=2)
+        self.clear_button.grid(row=0, column=2, padx=(0, 5))
+        self.train_voice_button.grid(row=0, column=3)
 
         # Macro frame
         self.macro_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
@@ -575,6 +582,25 @@ class MainWindow:
             self._log_message(f"❌ Error starting JARVIS: {str(e)}")
             self.is_listening = False
             self.voice_button.config(text="🎤 JARVIS")
+
+    def _open_voice_training(self):
+        """Open voice training; JARVIS is paused while it uses the microphone."""
+        if self.byte_smart_mode:
+            self._stop_jarvis_mode()
+        from .voice_trainer import VoiceTrainerWindow
+        VoiceTrainerWindow(master=self.root, on_finish=self._reload_voice_profile)
+
+    def _reload_voice_profile(self):
+        """Apply a freshly trained voice profile to the running voice processor."""
+        vp = self.voice_processor
+        if hasattr(vp, "_init_stt_settings"):
+            vp._init_stt_settings()
+            profile = getattr(vp, "voice_profile", {}) or {}
+            if vp.recognizer is not None and profile:
+                vp.recognizer.energy_threshold = profile.get("energy_threshold", vp.recognizer.energy_threshold)
+                if not os.getenv("VOICE_PAUSE_SECONDS"):
+                    vp.recognizer.pause_threshold = profile.get("pause_threshold", vp.recognizer.pause_threshold)
+            self._log_message("🎙 Voice profile loaded - JARVIS now uses your trained voice settings")
 
     def _interrupt_jarvis(self):
         session = getattr(self, '_jarvis_session', None)
